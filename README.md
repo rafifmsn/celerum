@@ -39,125 +39,120 @@ Top-scoring breaking event clusters are optionally enriched and summarized via a
 ## Architecture Overview
 
 ```mermaid
-flowchart TD
-    subgraph Ingestion["Ingestion Engine"]
-        F["20+ RSS Feeds"] -->|"RFC 7232 Polling (ETag / 304)"| P["Conditional Poller"]
-        P -->|"Tail-Drop & Noise Filter"| Q["Feed Ring Buffers"]
-    end
-
-    subgraph Clustering["In-Memory Algorithmic Clustering"]
-        Q -->|"Tokenize & Stem"| S["64-bit FNV-1a Shingling"]
-        S -->|"Prune Disjoint Pairs"| I["Inverted Index Lookup"]
-        I -->|"Two-Pointer Linear Scan"| J["Allocation-Free Jaccard"]
-        J -->|"Threshold >= tau"| U["Disjoint-Set Union (Union-Find)"]
-    end
-
-    subgraph Scoring["Scoring & Selection"]
-        U -->|"Multi-Factor Velocity Heuristic"| V["Velocity Scorer"]
-        V -->|"Pick Representative Item"| T["Top-K Event Selection"]
-    end
-
-    subgraph Synthesis["Enrichment & Fallback Engine"]
-        T -->|"Optional Context Scraping"| E["Scraper (Direct or Jina)"]
-        E -->|"Structured JSON Mode"| L["LLM (OpenRouter or DeepSeek)"]
-        L -->|"Fallback on Failure"| M["Standardized Payload Schema"]
-    end
-
-    subgraph Dispatch["Webhook Delivery"]
-        M --> D1["Telegram Bot API"]
-        M --> D2["Generic HTTP Webhooks"]
-        D1 -.->|"Delivery Failure"| R["Persistent SQLite Retry Queue"]
-        D2 -.->|"Delivery Failure"| R
-    end
+flowchart LR
+    A["RSS Feeds\n(RFC 7232 / 304)"] --> B["In-Memory Clustering\n(Shingles + Jaccard)"]
+    B --> C["Velocity Scoring\n(Tiers + Keywords)"]
+    C --> D["LLM Synthesis\n(with Fallback)"]
+    D --> E["Dispatch\n(Telegram / Webhooks)"]
 ```
 
-For comprehensive mathematical and protocol documentation, see [docs/architecture.md](docs/architecture.md).
+**How it works:**
+
+1. **RFC 7232 Conditional Ingestion (Every 5m + Jitter):**
+   Celerum polls all configured RSS and Atom feeds concurrently using cached `ETag` and `Last-Modified` headers stored in SQLite.
+   Unchanged feeds respond with `304 Not Modified` and zero body payload, finishing in sub-50ms with zero wasted bandwidth.
+   A randomized jitter of up to 10 percent prevents publisher traffic spikes, while per-feed ring buffers (default 20 items) prevent high-frequency publishers from starving slower, high-signal feeds.
+
+2. **In-Memory Token Shingling & Index Pruning:**
+   New articles are stripped of HTML tags, normalized to lowercase, and cleared of stop-words.
+   Tokens are hashed into 64-bit FNV-1a shingles and stored in sorted slices.
+   An in-memory inverted index maps shingle hashes to document IDs, bypassing over 80 percent of pairwise comparisons by immediately skipping document pairs with insufficient shingle overlap.
+
+3. **Allocation-Free Jaccard & Union-Find Clustering:**
+   Candidate pairs are evaluated using a linear two-pointer scan across sorted `[]uint64` shingle slices to calculate Jaccard similarity without heap allocations.
+   Pairs exceeding the similarity threshold ($\tau \ge 0.40$) are merged via Disjoint-Set Union (Union-Find) with path compression, collapsing multi-source coverage into cohesive event clusters.
+
+4. **Multi-Factor Velocity Scoring:**
+   Clusters are scored dynamically based on cluster size $|C_k|$ (multi-source verification), publisher tier weights, and market keyword boosts, balanced against a linear time decay penalty.
+
+5. **Hybrid Alert Cadence:**
+   - **Immediate Breaking Alert:** Clusters exceeding the velocity threshold ($S(C_k) \ge \tau_{\text{break}}$) trigger immediate dispatch. A deterministic SHA-256 fingerprint is recorded in SQLite to eliminate duplicate notifications.
+   - **Periodic Heartbeat Digest:** Clusters below the threshold remain in the 3-hour sliding window. When the 1-hour flush ticker fires, Celerum dispatches the top-$K$ undispatched clusters as a periodic digest.
+
+6. **Resilient Synthesis & Delivery:**
+   Qualified clusters trigger structured JSON completion through OpenAI-compatible LLM endpoints for summaries, key takeaways, and market sentiment.
+   If AI providers time out or fail, Celerum automatically falls back to raw RSS descriptions (`enriched: false`), guaranteeing breaking alerts are never lost.
+   Failed webhook dispatches are queued in SQLite, where a background worker retries them every 1 minute with exponential backoff up to 5 attempts.
+
+For the comprehensive technical specification and mathematical formulas, see [docs/architecture.md](docs/architecture.md).
 
 ## Quickstart
 
-### 1. Build the Binary
+1. **Build the binary:**
 
-```bash
-go build -o celerum ./cmd/celerum
-```
+   ```bash
+   go build -o celerum ./cmd/celerum
+   ```
 
-### 2. Initialize Configuration
+2. **Initialize configuration:**
 
-```bash
-./celerum init
-```
+   ```bash
+   ./celerum init
+   ```
 
-This generates a starter `celerum.yaml` template with overwrite protection.
+   This generates a starter `celerum.yaml` template with overwrite protection.
 
-### 3. Configure Credentials
+3. **Configure credentials:**
 
-Copy `.env.example` to `.env` and fill in your keys:
+   ```bash
+   cp .env.example .env
+   ```
 
-```bash
-cp .env.example .env
-```
+   Fill in your tokens in `.env`.
+   Celerum automatically loads `.env` on startup without requiring manual `export` commands.
 
-Celerum automatically parses `.env` on startup without requiring manual `export` commands.
+4. **Verify Telegram connection:**
 
-### 4. Verify Telegram Connection
+   ```bash
+   ./celerum test telegram
+   ```
 
-```bash
-./celerum test telegram
-```
+5. **Dry-run check (zero external cost):**
 
-### 5. Dry-Run Check (Zero API Spend)
+   ```bash
+   ./celerum check
+   ```
 
-```bash
-./celerum check
-```
+   Inspects live feed clustering and scores on stdout without dispatching webhooks or making LLM calls.
 
-Inspect live feed clustering and heuristic scores on stdout without dispatching webhooks or making LLM calls.
-
-### 6. Run Once or Start Continuous Daemon
-
-Execute a single pass:
-
-```bash
-./celerum run --once
-```
-
-Start the continuous background worker:
-
-```bash
-./celerum run
-```
+6. **Execute single pass or start continuous daemon:**  
+   Run a single cycle (forces an immediate top-$K$ flush and exits with code 0, ideal for cron jobs or CI):
+   ```bash
+   ./celerum run --once
+   ```
+   Or start the continuous 24/7 background worker (coordinates the 5-minute poll ticker with jitter, 1-minute retry loop, and 1-hour heartbeat flush):
+   ```bash
+   ./celerum run
+   ```
 
 ## Production Deployment (Docker)
 
 For continuous 24/7 background operation on a server or VPS, run Celerum as a container managed by Docker Compose.
 The service restarts automatically across host reboots or unexpected exits via `restart: unless-stopped`.
 
-### 1. Configure Secrets and Configuration
+1. **Configure environment and feeds:**
 
-Ensure `.env` contains your API tokens and `celerum.yaml` contains your feed configuration:
+   ```bash
+   cp .env.example .env
+   cp celerum.yaml.example celerum.yaml
+   ```
 
-```bash
-cp .env.example .env
-cp celerum.yaml.example celerum.yaml
-```
+2. **Start the container stack:**
 
-### 2. Start the Service
+   ```bash
+   docker compose up -d
+   ```
 
-```bash
-docker compose up -d
-```
+3. **Inspect live logs:**
 
-### 3. Monitor Logs
+   ```bash
+   docker compose logs -f celerum
+   ```
 
-```bash
-docker compose logs -f celerum
-```
-
-### 4. Stop the Service
-
-```bash
-docker compose down
-```
+4. **Stop the service:**
+   ```bash
+   docker compose down
+   ```
 
 The database and cached cursors are persisted in `./data` on the host across container upgrades.
 
@@ -227,3 +222,45 @@ Run the automated test suite across all packages:
 ```bash
 go test -v ./...
 ```
+
+## Operational Tuning & Case Study
+
+Balancing freshness against multi-source corroboration depends on the velocity of your monitored feeds.
+Below is an architectural breakdown of buffer dynamics and recommended tuning profiles.
+Please note that this case study is provided for architectural reference and educational modeling only.
+
+### Buffer Dynamics & In-Memory Decay
+
+When a high-volume publisher like Bloomberg produces 18 articles in a 5-minute cycle:
+
+1. **Ring Buffer Quota:**
+   All 18 articles fit within the feed buffer (`max_articles_per_feed: 20`).
+2. **Active Window Accumulation:**
+   The articles enter the in-memory window (`window_duration: 3h`).
+3. **Cluster Formation & Multi-Source Lag:**
+   If none of those 18 articles cross `breaking_threshold: 12.0` (because they are single-source stories without enough cross-publisher corroboration yet), they sit in memory waiting for corroboration.
+   If Reuters or CoinDesk publishes a matching story 15 minutes later, it merges into Bloomberg's cluster, bumping the score and potentially triggering an immediate breaking alert.
+4. **Time Decay Penalty:**
+   The longer an article sits without corroboration, the more its velocity score decays relative to evaluation time (see the scoring formulation in [docs/architecture.md](docs/architecture.md)).
+   At the 50-minute mark, unverified stories have decayed significantly, naturally ranking below fresh stories published 5 minutes ago.
+
+### Fast-Paced Market Feeds
+
+For fast-moving domains such as financial markets, commodities, or crypto, the default 1-hour heartbeat digest may feel delayed for actionable monitoring.
+A tighter configuration profile prioritizes immediacy:
+
+```yaml
+engine:
+  poll_interval: "2m" # Poll feeds every 2 minutes with randomized jitter
+  window_duration: "1h" # Expire uncorroborated stories after 60 minutes
+  flush_interval: "15m" # Flush top-K digest every 15 minutes instead of 1 hour
+  breaking_threshold: 9.0 # Lower threshold so multi-source Tier-1 stories alert instantly
+  top_k: 3 # Keep periodic digest payloads short and focused
+```
+
+- **15-Minute Digest Cadence:**
+  Ensures monitoring desks receive timely market digests without waiting an hour during quiet cycles.
+- **Tighter 1-Hour Window:**
+  Ensures stale single-source noise exits memory promptly after 60 minutes.
+- **Calibrated Breaking Threshold (9.0):**
+  A breaking Tier-1 wire reported by two outlets (e.g. Bloomberg and Reuters) scores roughly $2 \times 3.0 + 2 \times 2.0 = 10.0$, immediately crossing the 9.0 threshold and delivering within 120 seconds rather than waiting for any flush timer.
