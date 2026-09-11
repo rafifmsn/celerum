@@ -1,6 +1,7 @@
 package cluster
 
 import (
+	"runtime"
 	"testing"
 	"time"
 
@@ -102,4 +103,272 @@ func TestClusterArticles(t *testing.T) {
 	if !foundMerged {
 		t.Errorf("expected a merged cluster of size 2 for articles 1 and 2")
 	}
+}
+
+func BenchmarkJaccard(b *testing.B) {
+	shinglesA := []uint64{10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120, 130, 140, 150}
+	shinglesB := []uint64{20, 40, 60, 80, 100, 120, 140, 160, 180, 200, 220, 240, 260, 280, 300}
+
+	b.ReportAllocs()
+	for b.Loop() {
+		_ = Jaccard(shinglesA, shinglesB)
+	}
+}
+
+func BenchmarkTokenizeAndShingle(b *testing.B) {
+	title := "BlackRock Bitcoin ETF records $1 billion daily inflows as crypto markets surge"
+	desc := "Institutional investors pour money into BlackRock spot Bitcoin ETF product amid broader market rally."
+
+	b.ReportAllocs()
+	for b.Loop() {
+		toks := append(Tokenize(title), Tokenize(desc)...)
+		_ = ShingleHashes(toks)
+	}
+}
+
+func BenchmarkClusterArticles_100(b *testing.B) {
+	topics := []string{
+		"Federal Reserve cuts interest rates amid slowing inflation figures",
+		"BlackRock files updated spot Ethereum ETF application with SEC",
+		"Apple unveils new M4 Max chip with enhanced neural engine capabilities",
+		"OpenAI announces multimodal reasoning model with real-time audio API",
+		"Crude oil prices steady following OPEC production quota agreement",
+		"SpaceX completes sixth Starship flight test with successful booster catch",
+		"Nvidia reports record quarterly data center revenue driven by AI demand",
+		"Treasury yields slide to multi-month lows as job market data cools",
+		"Microsoft expands cloud infrastructure investment across Southeast Asia",
+		"European Central Bank signals cautious easing cycle amid wage growth",
+	}
+
+	descriptions := []string{
+		"Policymakers cite easing CPI figures and a softening labor market as catalysts for policy adjustment.",
+		"The investment firm submitted an amendment following regulator feedback on custody arrangements.",
+		"The next-generation silicon features increased unified memory bandwidth and ray tracing improvements.",
+		"The new model integrates native voice and visual capabilities with reduced inference latency.",
+		"Member nations agreed to extend voluntary output reductions to stabilize global energy markets.",
+		"The prototype demonstrated precision thermal shielding resilience during atmospheric reentry.",
+		"Enterprise hardware sales surged as hyper-scalers expanded GPU cluster compute capacity.",
+		"Benchmark government debt rallied following dovish comments from central bank officials.",
+		"The tech conglomerate announced multiple enterprise data center expansions to support regional demand.",
+		"Monetary authorities emphasized data-dependent decision making while reviewing headline wage indicators.",
+	}
+
+	articles := make([]model.Article, 0, 100)
+	for i := 0; i < 100; i++ {
+		topicIdx := i % len(topics)
+		articles = append(articles, model.Article{
+			ID:          string(rune('A' + (i % 26))) + string(rune('0' + (i / 26))),
+			Title:       topics[topicIdx],
+			Description: descriptions[topicIdx],
+			PublishedAt: time.Now(),
+		})
+	}
+
+	b.ReportAllocs()
+	for b.Loop() {
+		batch := make([]model.Article, len(articles))
+		copy(batch, articles)
+		_ = ClusterArticles(batch, 0.28)
+	}
+}
+
+func BenchmarkClusterArticles_500(b *testing.B) {
+	topics := []string{
+		"Federal Reserve cuts interest rates amid slowing inflation figures",
+		"BlackRock files updated spot Ethereum ETF application with SEC",
+		"Apple unveils new M4 Max chip with enhanced neural engine capabilities",
+		"OpenAI announces multimodal reasoning model with real-time audio API",
+		"Crude oil prices steady following OPEC production quota agreement",
+		"SpaceX completes sixth Starship flight test with successful booster catch",
+		"Nvidia reports record quarterly data center revenue driven by AI demand",
+		"Treasury yields slide to multi-month lows as job market data cools",
+		"Microsoft expands cloud infrastructure investment across Southeast Asia",
+		"European Central Bank signals cautious easing cycle amid wage growth",
+	}
+	descriptions := []string{
+		"Policymakers cite easing CPI figures and a softening labor market as catalysts for policy adjustment.",
+		"The investment firm submitted an amendment following regulator feedback on custody arrangements.",
+		"The next-generation silicon features increased unified memory bandwidth and ray tracing improvements.",
+		"The new model integrates native voice and visual capabilities with reduced inference latency.",
+		"Member nations agreed to extend voluntary output reductions to stabilize global energy markets.",
+		"The prototype demonstrated precision thermal shielding resilience during atmospheric reentry.",
+		"Enterprise hardware sales surged as hyper-scalers expanded GPU cluster compute capacity.",
+		"Benchmark government debt rallied following dovish comments from central bank officials.",
+		"The tech conglomerate announced multiple enterprise data center expansions to support regional demand.",
+		"Monetary authorities emphasized data-dependent decision making while reviewing headline wage indicators.",
+	}
+
+	articles := make([]model.Article, 0, 500)
+	for i := 0; i < 500; i++ {
+		topicIdx := i % len(topics)
+		articles = append(articles, model.Article{
+			ID:          string(rune('A' + (i % 26))) + string(rune('0' + (i / 26))),
+			Title:       topics[topicIdx],
+			Description: descriptions[topicIdx],
+			PublishedAt: time.Now(),
+		})
+	}
+
+	b.ReportAllocs()
+	for b.Loop() {
+		// Pass a copy so slice mutations on shingles do not accumulate
+		batch := make([]model.Article, len(articles))
+		copy(batch, articles)
+		_ = ClusterArticles(batch, 0.28)
+	}
+}
+
+func TestPruningEfficiency(t *testing.T) {
+	topics := []string{
+		"Federal Reserve cuts interest rates amid slowing inflation figures",
+		"BlackRock files updated spot Ethereum ETF application with SEC",
+		"Apple unveils new M4 Max chip with enhanced neural engine capabilities",
+		"OpenAI announces multimodal reasoning model with real-time audio API",
+		"Crude oil prices steady following OPEC production quota agreement",
+		"SpaceX completes sixth Starship flight test with successful booster catch",
+		"Nvidia reports record quarterly data center revenue driven by AI demand",
+		"Treasury yields slide to multi-month lows as job market data cools",
+		"Microsoft expands cloud infrastructure investment across Southeast Asia",
+		"European Central Bank signals cautious easing cycle amid wage growth",
+	}
+
+	descriptions := []string{
+		"Policymakers cite easing CPI figures and a softening labor market as catalysts for policy adjustment.",
+		"The investment firm submitted an amendment following regulator feedback on custody arrangements.",
+		"The next-generation silicon features increased unified memory bandwidth and ray tracing improvements.",
+		"The new model integrates native voice and visual capabilities with reduced inference latency.",
+		"Member nations agreed to extend voluntary output reductions to stabilize global energy markets.",
+		"The prototype demonstrated precision thermal shielding resilience during atmospheric reentry.",
+		"Enterprise hardware sales surged as hyper-scalers expanded GPU cluster compute capacity.",
+		"Benchmark government debt rallied following dovish comments from central bank officials.",
+		"The tech conglomerate announced multiple enterprise data center expansions to support regional demand.",
+		"Monetary authorities emphasized data-dependent decision making while reviewing headline wage indicators.",
+	}
+
+	articles := make([]model.Article, 0, 500)
+	for i := 0; i < 500; i++ {
+		topicIdx := i % len(topics)
+		articles = append(articles, model.Article{
+			ID:          string(rune('A' + (i % 26))) + string(rune('0' + (i / 26))),
+			Title:       topics[topicIdx],
+			Description: descriptions[topicIdx],
+			PublishedAt: time.Now(),
+		})
+	}
+
+	n := len(articles)
+	exhaustivePairs := n * (n - 1) / 2
+
+	for i := range articles {
+		titleTokens := Tokenize(articles[i].Title)
+		articles[i].TitleShingles = ShingleHashes(titleTokens)
+		descTokens := Tokenize(articles[i].Description)
+		if len(descTokens) > 20 {
+			descTokens = descTokens[:20]
+		}
+		combinedTokens := append(titleTokens, descTokens...)
+		articles[i].Shingles = ShingleHashes(combinedTokens)
+	}
+
+	invertedIndex := make(map[uint64][]int)
+	for idx, art := range articles {
+		seen := make(map[uint64]bool)
+		for _, s := range art.TitleShingles {
+			if !seen[s] {
+				seen[s] = true
+				invertedIndex[s] = append(invertedIndex[s], idx)
+			}
+		}
+		for _, s := range art.Shingles {
+			if !seen[s] {
+				seen[s] = true
+				invertedIndex[s] = append(invertedIndex[s], idx)
+			}
+		}
+	}
+
+	compared := make(map[uint64]struct{})
+	for i := 0; i < n; i++ {
+		sharedCounts := make(map[int]int)
+		for _, shingle := range articles[i].Shingles {
+			for _, matchIdx := range invertedIndex[shingle] {
+				if matchIdx > i {
+					sharedCounts[matchIdx]++
+				}
+			}
+		}
+		for j, count := range sharedCounts {
+			if count < 2 {
+				continue
+			}
+			pairKey := (uint64(i) << 32) | uint64(j)
+			compared[pairKey] = struct{}{}
+		}
+	}
+
+	actualPairs := len(compared)
+	prunedPercent := float64(exhaustivePairs-actualPairs) / float64(exhaustivePairs) * 100.0
+	t.Logf("Exhaustive pairs: %d, Evaluated pairs: %d, Pruned: %.2f%%", exhaustivePairs, actualPairs, prunedPercent)
+}
+
+func TestMemoryFootprint(t *testing.T) {
+	measureForCount := func(count int) {
+		topics := []string{
+			"Federal Reserve cuts interest rates amid slowing inflation figures",
+			"BlackRock files updated spot Ethereum ETF application with SEC",
+			"Apple unveils new M4 Max chip with enhanced neural engine capabilities",
+			"OpenAI announces multimodal reasoning model with real-time audio API",
+			"Crude oil prices steady following OPEC production quota agreement",
+			"SpaceX completes sixth Starship flight test with successful booster catch",
+			"Nvidia reports record quarterly data center revenue driven by AI demand",
+			"Treasury yields slide to multi-month lows as job market data cools",
+			"Microsoft expands cloud infrastructure investment across Southeast Asia",
+			"European Central Bank signals cautious easing cycle amid wage growth",
+		}
+		descriptions := []string{
+			"Policymakers cite easing CPI figures and a softening labor market as catalysts for policy adjustment.",
+			"The investment firm submitted an amendment following regulator feedback on custody arrangements.",
+			"The next-generation silicon features increased unified memory bandwidth and ray tracing improvements.",
+			"The new model integrates native voice and visual capabilities with reduced inference latency.",
+			"Member nations agreed to extend voluntary output reductions to stabilize global energy markets.",
+			"The prototype demonstrated precision thermal shielding resilience during atmospheric reentry.",
+			"Enterprise hardware sales surged as hyper-scalers expanded GPU cluster compute capacity.",
+			"Benchmark government debt rallied following dovish comments from central bank officials.",
+			"The tech conglomerate announced multiple enterprise data center expansions to support regional demand.",
+			"Monetary authorities emphasized data-dependent decision making while reviewing headline wage indicators.",
+		}
+
+		articles := make([]model.Article, 0, count)
+		for i := 0; i < count; i++ {
+			topicIdx := i % len(topics)
+			articles = append(articles, model.Article{
+				ID:          string(rune('A' + (i % 26))) + string(rune('0' + (i / 26))),
+				Title:       topics[topicIdx],
+				Description: descriptions[topicIdx],
+				PublishedAt: time.Now(),
+			})
+		}
+
+		// Force GC before measurement to establish clean baseline
+		runtime.GC()
+		var before runtime.MemStats
+		runtime.ReadMemStats(&before)
+
+		clusters := ClusterArticles(articles, 0.28)
+		_ = clusters
+
+		var after runtime.MemStats
+		runtime.ReadMemStats(&after)
+
+		allocatedBytes := after.TotalAlloc - before.TotalAlloc
+		heapInUse := float64(after.HeapInuse) / (1024 * 1024)
+		sysMemory := float64(after.Sys) / (1024 * 1024)
+
+		t.Logf("[%d Articles] Heap Allocated during run: %.2f MB | Heap In-Use: %.2f MB | OS Sys Memory: %.2f MB",
+			count, float64(allocatedBytes)/(1024*1024), heapInUse, sysMemory)
+	}
+
+	measureForCount(100)
+	measureForCount(500)
+	measureForCount(1000)
 }
