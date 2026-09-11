@@ -46,7 +46,35 @@ flowchart LR
     D --> E["Dispatch\n(Telegram / Webhooks)"]
 ```
 
-For the comprehensive technical specification, mathematical models, and subsystem diagrams, see [docs/architecture.md](docs/architecture.md).
+**How it works:**
+
+1. **RFC 7232 Conditional Ingestion (Every 5m + Jitter):**
+   Celerum polls all configured RSS and Atom feeds concurrently using cached `ETag` and `Last-Modified` headers stored in SQLite.
+   Unchanged feeds respond with `304 Not Modified` and zero body payload, finishing in sub-50ms with zero wasted bandwidth.
+   A randomized jitter of up to 10 percent prevents publisher traffic spikes, while per-feed ring buffers (default 20 items) prevent high-frequency publishers from starving slower, high-signal feeds.
+
+2. **In-Memory Token Shingling & Index Pruning:**
+   New articles are stripped of HTML tags, normalized to lowercase, and cleared of stop-words.
+   Tokens are hashed into 64-bit FNV-1a shingles and stored in sorted slices.
+   An in-memory inverted index maps shingle hashes to document IDs, bypassing over 80 percent of pairwise comparisons by immediately skipping document pairs with insufficient shingle overlap.
+
+3. **Allocation-Free Jaccard & Union-Find Clustering:**
+   Candidate pairs are evaluated using a linear two-pointer scan across sorted `[]uint64` shingle slices to calculate Jaccard similarity without heap allocations.
+   Pairs exceeding the similarity threshold ($\tau \ge 0.40$) are merged via Disjoint-Set Union (Union-Find) with path compression, collapsing multi-source coverage into cohesive event clusters.
+
+4. **Multi-Factor Velocity Scoring:**
+   Clusters are scored dynamically based on cluster size $|C_k|$ (multi-source verification), publisher tier weights, and market keyword boosts, balanced against a linear time decay penalty.
+
+5. **Hybrid Alert Cadence:**
+   - **Immediate Breaking Alert:** Clusters exceeding the velocity threshold ($S(C_k) \ge \tau_{\text{break}}$) trigger immediate dispatch. A deterministic SHA-256 fingerprint is recorded in SQLite to eliminate duplicate notifications.
+   - **Periodic Heartbeat Digest:** Clusters below the threshold remain in the 3-hour sliding window. When the 1-hour flush ticker fires, Celerum dispatches the top-$K$ undispatched clusters as a periodic digest.
+
+6. **Resilient Synthesis & Delivery:**
+   Qualified clusters trigger structured JSON completion through OpenAI-compatible LLM endpoints for summaries, key takeaways, and market sentiment.
+   If AI providers time out or fail, Celerum automatically falls back to raw RSS descriptions (`enriched: false`), guaranteeing breaking alerts are never lost.
+   Failed webhook dispatches are queued in SQLite, where a background worker retries them every 1 minute with exponential backoff up to 5 attempts.
+
+For the comprehensive technical specification and mathematical formulas, see [docs/architecture.md](docs/architecture.md).
 
 ## Quickstart
 
@@ -87,12 +115,12 @@ For the comprehensive technical specification, mathematical models, and subsyste
 
    Inspects live feed clustering and scores on stdout without dispatching webhooks or making LLM calls.
 
-6. **Execute single pass or start daemon:**
-   Run a single cycle:
+6. **Execute single pass or start continuous daemon:**  
+   Run a single cycle (forces an immediate top-$K$ flush and exits with code 0, ideal for cron jobs or CI):
    ```bash
    ./celerum run --once
    ```
-   Or start the continuous background worker:
+   Or start the continuous 24/7 background worker (coordinates the 5-minute poll ticker with jitter, 1-minute retry loop, and 1-hour heartbeat flush):
    ```bash
    ./celerum run
    ```
