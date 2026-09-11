@@ -39,39 +39,14 @@ Top-scoring breaking event clusters are optionally enriched and summarized via a
 ## Architecture Overview
 
 ```mermaid
-flowchart TD
-    subgraph Ingestion["Ingestion Engine"]
-        F["20+ RSS Feeds"] -->|"RFC 7232 Polling (ETag / 304)"| P["Conditional Poller"]
-        P -->|"Tail-Drop & Noise Filter"| Q["Feed Ring Buffers"]
-    end
-
-    subgraph Clustering["In-Memory Algorithmic Clustering"]
-        Q -->|"Tokenize & Stem"| S["64-bit FNV-1a Shingling"]
-        S -->|"Prune Disjoint Pairs"| I["Inverted Index Lookup"]
-        I -->|"Two-Pointer Linear Scan"| J["Allocation-Free Jaccard"]
-        J -->|"Threshold >= tau"| U["Disjoint-Set Union (Union-Find)"]
-    end
-
-    subgraph Scoring["Scoring & Selection"]
-        U -->|"Multi-Factor Velocity Heuristic"| V["Velocity Scorer"]
-        V -->|"Pick Representative Item"| T["Top-K Event Selection"]
-    end
-
-    subgraph Synthesis["Enrichment & Fallback Engine"]
-        T -->|"Optional Context Scraping"| E["Scraper (Direct or Jina)"]
-        E -->|"Structured JSON Mode"| L["LLM (OpenRouter or DeepSeek)"]
-        L -->|"Fallback on Failure"| M["Standardized Payload Schema"]
-    end
-
-    subgraph Dispatch["Webhook Delivery"]
-        M --> D1["Telegram Bot API"]
-        M --> D2["Generic HTTP Webhooks"]
-        D1 -.->|"Delivery Failure"| R["Persistent SQLite Retry Queue"]
-        D2 -.->|"Delivery Failure"| R
-    end
+flowchart LR
+    A["RSS Feeds\n(RFC 7232 / 304)"] --> B["In-Memory Clustering\n(Shingles + Jaccard)"]
+    B --> C["Velocity Scoring\n(Tiers + Keywords)"]
+    C --> D["LLM Synthesis\n(with Fallback)"]
+    D --> E["Dispatch\n(Telegram / Webhooks)"]
 ```
 
-For comprehensive mathematical and protocol documentation, see [docs/architecture.md](docs/architecture.md).
+For the comprehensive technical specification, mathematical models, and subsystem diagrams, see [docs/architecture.md](docs/architecture.md).
 
 ## Quickstart
 

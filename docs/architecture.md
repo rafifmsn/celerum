@@ -5,10 +5,65 @@
 Celerum is designed around algorithmic efficiency, protocol compliance, and deterministic execution.
 Instead of relying on vector databases or brute-force LLM ingestion, Celerum uses RFC 7232 HTTP conditional requests, set-theoretic similarity metrics, and Disjoint-Set Union clustering.
 
+```mermaid
+flowchart TD
+    subgraph Ingestion["Ingestion Engine"]
+        F["20+ RSS Feeds"] -->|"RFC 7232 Polling (ETag / 304)"| P["Conditional Poller"]
+        P -->|"Tail-Drop & Noise Filter"| Q["Feed Ring Buffers"]
+    end
+
+    subgraph Clustering["In-Memory Algorithmic Clustering"]
+        Q -->|"Tokenize & Stem"| S["64-bit FNV-1a Shingling"]
+        S -->|"Prune Disjoint Pairs"| I["Inverted Index Lookup"]
+        I -->|"Two-Pointer Linear Scan"| J["Allocation-Free Jaccard"]
+        J -->|"Threshold >= tau"| U["Disjoint-Set Union (Union-Find)"]
+    end
+
+    subgraph Scoring["Scoring & Selection"]
+        U -->|"Multi-Factor Velocity Heuristic"| V["Velocity Scorer"]
+        V -->|"Pick Representative Item"| T["Top-K Event Selection"]
+    end
+
+    subgraph Synthesis["Enrichment & Fallback Engine"]
+        T -->|"Optional Context Scraping"| E["Scraper (Direct or Jina)"]
+        E -->|"Structured JSON Mode"| L["LLM (OpenRouter or DeepSeek)"]
+        L -->|"Fallback on Failure"| M["Standardized Payload Schema"]
+    end
+
+    subgraph Dispatch["Webhook Delivery"]
+        M --> D1["Telegram Bot API"]
+        M --> D2["Generic HTTP Webhooks"]
+        D1 -.->|"Delivery Failure"| R["Persistent SQLite Retry Queue"]
+        D2 -.->|"Delivery Failure"| R
+    end
+```
+
 ## 2. Ingestion Engine: RFC 7232 Conditional Polling
 
 Polling dozens of RSS feeds on frequent intervals risks excessive CPU and network overhead.
 Celerum enforces HTTP conditional caching standards:
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant E as Celerum Engine
+    participant S as SQLite (feed_state)
+    participant P as Publisher Server
+
+    E->>S: Query ETag & Last-Modified for feed URL
+    S-->>E: Return cached cursor (ETag / timestamp)
+
+    alt Unmodified Feed (Sub-50ms)
+        E->>P: GET /rss (If-None-Match, If-Modified-Since)
+        P-->>E: 304 Not Modified (empty body)
+        Note over E,P: Zero network bandwidth consumed
+    else New Articles Available
+        E->>P: GET /rss (If-None-Match, If-Modified-Since)
+        P-->>E: 200 OK (XML body + new headers)
+        E->>S: Store updated ETag & Last-Modified
+        E->>E: Parse XML, prune noise, append to ring buffer
+    end
+```
 
 - **ETag and Last-Modified Tracking:**
   Feed states are stored in an embedded SQLite table (`feed_state`).
@@ -23,6 +78,17 @@ Celerum enforces HTTP conditional caching standards:
 
 Breaking news coverage shares distinctive lexical tokens (proper nouns, figures, tickers) across reporting outlets.
 Celerum uses set-theoretic similarity without floating-point neural embeddings.
+
+```mermaid
+flowchart LR
+    A["Raw RSS Item"] --> B["Clean & Stem\n(Strip HTML, lowercase)"]
+    B --> C["64-bit FNV-1a\nSorted Shingle Hashes"]
+    C --> D["Inverted Index\n(Candidate Filter)"]
+    D --> E["Two-Pointer Scan\n(Allocation-Free Jaccard)"]
+    E --> F{"J(A, B) >= tau?"}
+    F -->|Yes| G["Union-Find Merge\n(Path Compression)"]
+    F -->|No| H["Separate Clusters"]
+```
 
 ### Text Normalization and Shingling
 
@@ -65,8 +131,28 @@ $$S(C_k) = w_1 \cdot |C_k| + w_2 \sum_{i \in C_k} \text{Tier}(source_i) + w_3 \c
 
 Celerum avoids both the latency of rigid batch windows and the silence of threshold-only alerts through a hybrid trigger:
 
+```mermaid
+flowchart TD
+    A["Cluster Evaluator"] --> B{"Score S(C_k) >= tau_break?"}
+    B -->|Yes| C["Immediate Breaking Alert"]
+    B -->|No| D["Buffer in Active Window"]
+
+    D --> E{"1-Hour Heartbeat Expired?"}
+    E -->|Yes| F["Select Top-K Undispatched Clusters"]
+    E -->|No| G["Await Next Polling Cycle"]
+
+    C --> H["Check SQLite Deduplication Hash"]
+    F --> H
+
+    H --> I{"Already Dispatched?"}
+    I -->|Yes| J["Drop Alert (Prevent Duplicate)"]
+    I -->|No| K["Persist Cluster Fingerprint"]
+    K --> L["LLM Synthesis / Fallback"]
+    L --> M["Dispatch to Telegram & Webhooks"]
+```
+
 - **Immediate Trigger (Breaking News):**
-  Clusters crossing $S(C_k) \ge \text{breaking\_threshold}$ dispatch immediately.
+  Clusters crossing $S(C_k) \ge \tau_{\text{break}}$ (the configured `breaking_threshold`) dispatch immediately.
   Cluster signatures are recorded in SQLite to prevent duplicate alerts.
 
 - **Periodic Heartbeat (Top-K Digest):**
