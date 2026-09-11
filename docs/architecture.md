@@ -88,12 +88,25 @@ Duplicate reports across outlets collapse into unified event clusters $C_k$ in n
 
 Coverage density across multiple independent sources serves as the primary heuristic signal for breaking developments:
 
-$$S(C_k) = w_1 \cdot |C_k| + w_2 \sum_{i \in C_k} \text{Tier}(source_i) + w_3 \cdot \text{EntityBonus} - \lambda \Delta t$$
+$$S(C_k) = w_1 \cdot |C_k| + w_2 \sum_{i \in C_k} \text{Tier}(source_i) + w_3 \cdot \text{KeywordBonus} - \lambda \Delta t$$
 
-- **Cluster Size ($|C_k|$):** Quantifies multi-source verification velocity.
-- **Source Tier Weight:** Multiplier favoring Tier-1 primary wires over secondary commentary.
-- **Keyword Bonus:** Regex boosts for high-impact market terms (such as ETF, SEC, Fed, ATH).
-- **Time Decay ($\lambda \Delta t$):** Linear penalty favoring fresh events over older coverage.
+- **Cluster Size ($|C_k|$):** Quantifies multi-source verification velocity ($w_1 = 3.0$).
+- **Source Tier Weight:** Multiplier favoring primary wire sources ($w_2 = 1.5$).
+- **Keyword Bonus:** Boost for high-impact market terms ($w_3 = 2.0$).
+- **Time Decay ($\lambda \Delta t$):** Linear penalty favoring fresh events over older coverage ($\lambda = 0.5$).
+
+### Calculation Example
+
+Consider a breaking event reported concurrently by two Tier-1 outlets (e.g. CoinDesk and Bloomberg) matching two keywords (`etf` and `sec`) 10 minutes after initial publication:
+
+- **Cluster Size:** $|C_k| = 2 \implies 2 \times 3.0 = 6.0$
+- **Source Tiers:** Tier 1 for both feeds $\implies (1 \times 1.5) + (1 \times 1.5) = 3.0$
+- **Keyword Matches:** Matches `etf` and `sec` $\implies 2 \times 2.0 = 4.0$
+- **Time Decay:** $10 \text{ minutes} = 0.167 \text{ hours} \implies 0.167 \times 0.5 \approx 0.08$
+
+$$S(C_k) = 6.0 + 3.0 + 4.0 - 0.08 = 12.92$$
+
+Because $S(C_k) = 12.92 \ge \tau_{\text{break}}$ (12.0), the cluster crosses the breaking threshold and triggers an immediate push alert without waiting for the 1-hour digest.
 
 ## 5. Hybrid Dispatch Cadence
 

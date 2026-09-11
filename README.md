@@ -222,3 +222,45 @@ Run the automated test suite across all packages:
 ```bash
 go test -v ./...
 ```
+
+## Operational Tuning & Case Study
+
+Balancing freshness against multi-source corroboration depends on the velocity of your monitored feeds.
+Below is an architectural breakdown of buffer dynamics and recommended tuning profiles.
+Please note that this case study is provided for architectural reference and educational modeling only.
+
+### Buffer Dynamics & In-Memory Decay
+
+When a high-volume publisher like Bloomberg produces 18 articles in a 5-minute cycle:
+
+1. **Ring Buffer Quota:**
+   All 18 articles fit within the feed buffer (`max_articles_per_feed: 20`).
+2. **Active Window Accumulation:**
+   The articles enter the in-memory window (`window_duration: 3h`).
+3. **Cluster Formation & Multi-Source Lag:**
+   If none of those 18 articles cross `breaking_threshold: 12.0` (because they are single-source stories without enough cross-publisher corroboration yet), they sit in memory waiting for corroboration.
+   If Reuters or CoinDesk publishes a matching story 15 minutes later, it merges into Bloomberg's cluster, bumping the score and potentially triggering an immediate breaking alert.
+4. **Time Decay Penalty:**
+   The longer an article sits without corroboration, the more its velocity score decays relative to evaluation time (see the scoring formulation in [docs/architecture.md](docs/architecture.md)).
+   At the 50-minute mark, unverified stories have decayed significantly, naturally ranking below fresh stories published 5 minutes ago.
+
+### Fast-Paced Market Feeds
+
+For fast-moving domains such as financial markets, commodities, or crypto, the default 1-hour heartbeat digest may feel delayed for actionable monitoring.
+A tighter configuration profile prioritizes immediacy:
+
+```yaml
+engine:
+  poll_interval: "2m" # Poll feeds every 2 minutes with randomized jitter
+  window_duration: "1h" # Expire uncorroborated stories after 60 minutes
+  flush_interval: "15m" # Flush top-K digest every 15 minutes instead of 1 hour
+  breaking_threshold: 9.0 # Lower threshold so multi-source Tier-1 stories alert instantly
+  top_k: 3 # Keep periodic digest payloads short and focused
+```
+
+- **15-Minute Digest Cadence:**
+  Ensures monitoring desks receive timely market digests without waiting an hour during quiet cycles.
+- **Tighter 1-Hour Window:**
+  Ensures stale single-source noise exits memory promptly after 60 minutes.
+- **Calibrated Breaking Threshold (9.0):**
+  A breaking Tier-1 wire reported by two outlets (e.g. Bloomberg and Reuters) scores roughly $2 \times 3.0 + 2 \times 2.0 = 10.0$, immediately crossing the 9.0 threshold and delivering within 120 seconds rather than waiting for any flush timer.
