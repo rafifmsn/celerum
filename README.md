@@ -9,6 +9,8 @@ Celerum collects high-volume RSS feeds with near-zero bandwidth using RFC 7232 H
 Instead of relying on costly vector embeddings, Celerum uses in-memory token shingling, inverted index pruning, Jaccard similarity, and Disjoint-Set Union (Union-Find) clustering.
 Top-scoring breaking event clusters are optionally enriched and summarized via an LLM, then dispatched to Telegram or generic HTTP webhooks.
 
+![Celerum Thumbnail](./celerum-thumb.jpg)
+
 ## Key Features
 
 - **RFC 7232 Conditional Ingestion:**
