@@ -1,0 +1,56 @@
+# Celerum Configuration
+version: "1"
+
+database:
+  path: "data/celerum.db"
+
+engine:
+  poll_interval: "5m"
+  window_duration: "3h"
+  flush_interval: "1h"
+  max_articles_per_feed: 20
+  similarity_threshold: 0.40
+  breaking_threshold: 12.0
+  top_k: 2
+
+feeds:
+  - name: "CoinDesk"
+    url: "https://www.coindesk.com/arc/outboundfeeds/rss/"
+    tier: 1
+  - name: "Cointelegraph"
+    url: "https://cointelegraph.com/rss"
+    tier: 2
+
+keywords:
+  boost:
+    - "etf"
+    - "sec"
+    - "fed"
+    - "ath"
+    - "acquisition"
+  blocklist:
+    - "/sponsored/"
+    - "/press-releases/"
+
+enrichment:
+  scraper: "none" # none | direct | jina
+  jina_api_key: "${JINA_API_KEY}"
+
+llm:
+  enabled: true
+  provider: "openrouter" # openrouter | deepseek | openai | groq | ollama
+  base_url: "" # optional, defaults to provider endpoint
+  model: "deepseek/deepseek-chat"
+  api_key: "${LLM_API_KEY}"
+  language: "id"
+
+dispatch:
+  telegram:
+    enabled: true
+    bot_token: "${TELEGRAM_BOT_TOKEN}"
+    chat_id: "${TELEGRAM_CHAT_ID}"
+  webhook:
+    enabled: false
+    url: "https://example.com/api/news"
+    headers:
+      Authorization: "Bearer ${WEBHOOK_SECRET}"

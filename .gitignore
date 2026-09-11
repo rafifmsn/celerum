@@ -1,0 +1,30 @@
+# Binaries
+/celerum
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+
+# Configuration and Environment
+celerum.yaml
+!celerum.yaml.example
+.env
+!.env.example
+
+# Embedded Database and Data Volumes
+data/
+*.db
+*.db-*
+*.db-wal
+*.db-shm
+
+# IDE and OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+*~

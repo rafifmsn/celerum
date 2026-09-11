@@ -1,0 +1,18 @@
+x-logging: &default-logging
+  logging:
+    driver: "json-file"
+    options:
+      max-size: "10m"
+      max-file: "3"
+
+services:
+  celerum:
+    <<: *default-logging
+    build: .
+    container_name: celerum
+    restart: unless-stopped
+    volumes:
+      - ./celerum.yaml:/app/celerum.yaml:ro
+      - ./data:/app/data
+    env_file:
+      - .env
