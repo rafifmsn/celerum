@@ -228,6 +228,36 @@ Run the automated test suite across all packages:
 go test -v ./...
 ```
 
+## Benchmarks
+
+Celerum avoids neural embeddings and vector databases in favor of deterministic set-theoretic clustering and HTTP conditional caching.
+The engine clusters active sliding windows in sub-3ms per 100 articles on a constrained <15MB RAM footprint, scaling to 1,000 items under 18MB.
+All algorithmic benchmarks below are measured on Go 1.25+ on an AMD Ryzen 5 6600H CPU without external network or LLM dependencies.
+
+![Celerum Engine Benchmarks](./benchmarks.jpg)
+
+### Performance Highlights
+
+| Component / Operation          | Benchmark Metric | Allocations / Memory              | Engineering Impact                                                          |
+| :----------------------------- | :--------------- | :-------------------------------- | :-------------------------------------------------------------------------- |
+| **Two-Pointer Jaccard Scan**   | 11.01 ns / op    | 0 B / op, 0 allocs / op           | Zero heap allocation similarity comparison across sorted 64-bit uint slices |
+| **Shingle & Token Hash**       | 13.80 µs / op    | 5.0 KB / op, 44 allocs / op       | FNV-1a 64-bit unigram and bigram hashing with stop-word stripping           |
+| **Cluster Corpus (100 items)** | 2.38 ms / run    | 1.14 MB / op, 8,075 allocs        | Real-time sliding window event clustering for active RSS streams            |
+| **Cluster Corpus (500 items)** | 21.72 ms / run   | 8.71 MB / op, 35,971 allocs       | High-density multi-source coverage deduplication and Union-Find merging     |
+| **Inverted Index Pruning**     | 80.16% pruned    | Evaluated 24,750 of 124,750 pairs | Bypasses pairwise comparisons when documents share fewer than 2 shingles    |
+
+### Reproduce Benchmarks
+
+Run the benchmark suite and pruning verification locally:
+
+```bash
+# Run micro-benchmarks with memory profiling
+go test -bench=. -benchmem ./internal/cluster
+
+# Measure inverted index pairwise pruning efficiency
+go test -v -run TestPruningEfficiency ./internal/cluster
+```
+
 ## Operational Tuning
 
 Balancing freshness against multi-source corroboration depends on the velocity of your monitored feeds.
