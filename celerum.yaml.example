@@ -9,7 +9,7 @@ engine:
   window_duration: "3h"
   flush_interval: "1h"
   max_articles_per_feed: 20
-  similarity_threshold: 0.40
+  similarity_threshold: 0.28
   breaking_threshold: 12.0
   top_k: 2
 
@@ -40,9 +40,12 @@ llm:
   enabled: true
   provider: "openrouter" # openrouter | deepseek | openai | groq | ollama
   base_url: "" # optional, defaults to provider endpoint
-  model: "deepseek/deepseek-chat"
+  model: "meta-llama/llama-3.1-8b-instruct"
   api_key: "${LLM_API_KEY}"
-  language: "id"
+  language: "en"
+  # Optional: custom synthesis prompt. If omitted or empty, Celerum uses its default high-density editor prompt.
+  # Supports {{language}} placeholder.
+  system_prompt: ""
 
 dispatch:
   telegram:

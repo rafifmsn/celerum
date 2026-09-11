@@ -7,32 +7,24 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"regexp"
 	"strings"
 	"time"
 
 	"celerum/internal/config"
 )
 
-// SummaryResult represents structured synthesis from the LLM.
-type SummaryResult struct {
-	Title     string   `json:"title"`
-	Summary   string   `json:"summary"`
-	Takeaways []string `json:"takeaways"`
-	Sentiment string   `json:"sentiment"`
-}
-
-// Summarizer produces structured summaries from article content.
+// Summarizer produces structured briefings from article content.
 type Summarizer interface {
-	Summarize(ctx context.Context, title, content, language string) (*SummaryResult, error)
+	Summarize(ctx context.Context, title, content, language string) (string, error)
 }
 
 // Client implements OpenAI-compatible chat completion calls.
 type Client struct {
-	httpClient *http.Client
-	baseURL    string
-	apiKey     string
-	model      string
+	httpClient   *http.Client
+	baseURL      string
+	apiKey       string
+	model        string
+	customPrompt string
 }
 
 // NewSummarizer creates an LLM summarizer based on config.
@@ -60,23 +52,19 @@ func NewSummarizer(cfg *config.Config) Summarizer {
 
 	return &Client{
 		httpClient: &http.Client{
-			Timeout: 10 * time.Second,
+			Timeout: 30 * time.Second,
 		},
-		baseURL: baseURL,
-		apiKey:  cfg.LLM.APIKey,
-		model:   modelName,
+		baseURL:      baseURL,
+		apiKey:       cfg.LLM.APIKey,
+		model:        modelName,
+		customPrompt: cfg.LLM.SystemPrompt,
 	}
 }
 
 type chatRequest struct {
-	Model          string           `json:"model"`
-	Messages       []chatMessage    `json:"messages"`
-	ResponseFormat *responseFormat  `json:"response_format,omitempty"`
-	Temperature    float64          `json:"temperature"`
-}
-
-type responseFormat struct {
-	Type string `json:"type"`
+	Model       string        `json:"model"`
+	Messages    []chatMessage `json:"messages"`
+	Temperature float64       `json:"temperature"`
 }
 
 type chatMessage struct {
@@ -95,22 +83,58 @@ type chatResponse struct {
 	} `json:"error,omitempty"`
 }
 
-var codeFenceRegex = regexp.MustCompile(`(?s)^` + "```" + `(?:json)?\s*(.*?)\s*` + "```" + `$`)
-
-// Summarize dispatches a prompt to the LLM with retry and JSON unmarshaling.
-func (c *Client) Summarize(ctx context.Context, title, content, language string) (*SummaryResult, error) {
+func buildSystemPrompt(customPrompt, language string) string {
 	if language == "" {
-		language = "id"
+		language = "en"
+	}
+	if strings.TrimSpace(customPrompt) != "" {
+		return strings.ReplaceAll(customPrompt, "{{language}}", language)
 	}
 
-	systemPrompt := fmt.Sprintf(
-		"You are a financial and market news summarizer. Output strictly valid JSON with no conversational text or markdown formatting.\n"+
-			"Target language: %s.\n"+
-			"Schema: {\"title\": \"Headline in %s\", \"summary\": \"2-3 sentence overview\", \"takeaways\": [\"bullet 1\", \"bullet 2\"], \"sentiment\": \"bullish|bearish|neutral\"}",
-		language, language,
-	)
+	return fmt.Sprintf(`You are an elite financial news analyst and market intelligence editor.
+Your task is to rephrase and synthesize the provided source into a high-density, authoritative news briefing.
+Do NOT generate a headline, title, or sources section; the headline and sources are handled programmatically by the system.
+Output clean formatting suitable for Telegram: use dense paragraphs and bullet points (•) where appropriate for distinct metrics.
+Do NOT use markdown headers (# or ##), code blocks, or conversational commentary.
 
-	userPrompt := fmt.Sprintf("Title: %s\n\nContent:\n%s", title, content)
+Target language for all text: %s.
+
+CORE EDITORIAL DIRECTIVES:
+1. RETAIN ALL QUANTITATIVE DATA (NON-NEGOTIABLE):
+   - Never omit, round off, or convert hard figures into generic descriptions.
+   - Retain every number, percentage, dollar amount, multiple, token price, share volume, valuation, and date present in the source (e.g. "$680M", "HK$7.08B", "RMB10.7B", "20%%", "2x", "50 bps").
+   - Quantify every development whenever figures exist in the source.
+
+2. PRECISE ENTITIES, MECHANISMS, AND CATALYSTS:
+   - Identify specific companies, protocols, tickers, stock codes, executives, and regulators by name.
+   - State the exact financial or legal mechanism (e.g. "IPO proceeds allocation", "convertible debt notes", "treasury reserve accumulation") rather than vague descriptions.
+
+3. REPHRASED HIGH-DENSITY NARRATIVE:
+   - Rephrase and organize into well-structured, fluent paragraphs rather than raw copy-pasting.
+   - Eliminate filler words, platitudes, and empty commentary.
+   - Flexible length: for brief sources, deliver a tight factual paragraph; for rich in-depth articles, deliver 2-3 dense narrative paragraphs.`,
+		language,
+	)
+}
+
+func buildUserPrompt(title, content, language string) string {
+	if language == "" {
+		language = "en"
+	}
+	return fmt.Sprintf(
+		"Source Title: %s\n\nSource Content:\n%s\n\nTask: Deliver a high-density executive briefing in %s adhering strictly to all editorial directives. Do NOT include a headline. Retain all quantitative metrics, names, and mechanisms without conversational filler.",
+		title, content, language,
+	)
+}
+
+// Summarize dispatches a prompt to the LLM with retry and returns clean formatted text.
+func (c *Client) Summarize(ctx context.Context, title, content, language string) (string, error) {
+	if language == "" {
+		language = "en"
+	}
+
+	systemPrompt := buildSystemPrompt(c.customPrompt, language)
+	userPrompt := buildUserPrompt(title, content, language)
 
 	reqBody := chatRequest{
 		Model: c.model,
@@ -118,13 +142,12 @@ func (c *Client) Summarize(ctx context.Context, title, content, language string)
 			{Role: "system", Content: systemPrompt},
 			{Role: "user", Content: userPrompt},
 		},
-		ResponseFormat: &responseFormat{Type: "json_object"},
-		Temperature:    0.2,
+		Temperature: 0.2,
 	}
 
 	jsonBytes, err := json.Marshal(reqBody)
 	if err != nil {
-		return nil, fmt.Errorf("marshaling chat request: %w", err)
+		return "", fmt.Errorf("marshaling chat request: %w", err)
 	}
 
 	url := c.baseURL + "/chat/completions"
@@ -134,14 +157,14 @@ func (c *Client) Summarize(ctx context.Context, title, content, language string)
 		if attempt > 0 {
 			select {
 			case <-ctx.Done():
-				return nil, ctx.Err()
+				return "", ctx.Err()
 			case <-time.After(time.Duration(attempt) * 500 * time.Millisecond):
 			}
 		}
 
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(jsonBytes))
 		if err != nil {
-			return nil, fmt.Errorf("creating http request: %w", err)
+			return "", fmt.Errorf("creating http request: %w", err)
 		}
 		req.Header.Set("Content-Type", "application/json")
 		if c.apiKey != "" {
@@ -178,18 +201,8 @@ func (c *Client) Summarize(ctx context.Context, title, content, language string)
 		}
 
 		rawContent := strings.TrimSpace(chatResp.Choices[0].Message.Content)
-		if match := codeFenceRegex.FindStringSubmatch(rawContent); len(match) > 1 {
-			rawContent = strings.TrimSpace(match[1])
-		}
-
-		var result SummaryResult
-		if err := json.Unmarshal([]byte(rawContent), &result); err != nil {
-			lastErr = fmt.Errorf("parsing summary JSON: %w (raw: %s)", err, rawContent)
-			continue
-		}
-
-		return &result, nil
+		return rawContent, nil
 	}
 
-	return nil, fmt.Errorf("llm summarization failed after retries: %w", lastErr)
+	return "", fmt.Errorf("llm summarization failed after retries: %w", lastErr)
 }

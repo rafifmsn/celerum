@@ -17,6 +17,8 @@ feeds:
   - name: "TestFeed"
     url: "https://example.com/rss"
     tier: 1
+llm:
+  enabled: true
 `
 	if err := os.WriteFile(configPath, []byte(content), 0644); err != nil {
 		t.Fatalf("failed to write test config: %v", err)
@@ -33,11 +35,14 @@ feeds:
 	if cfg.Engine.FlushDur != 1*time.Hour {
 		t.Errorf("expected 1h flush duration, got %v", cfg.Engine.FlushDur)
 	}
-	if cfg.Engine.SimilarityThreshold != 0.40 {
-		t.Errorf("expected 0.40 similarity threshold, got %v", cfg.Engine.SimilarityThreshold)
+	if cfg.Engine.SimilarityThreshold != 0.28 {
+		t.Errorf("expected 0.28 similarity threshold, got %v", cfg.Engine.SimilarityThreshold)
 	}
 	if cfg.Database.Path != "data/celerum.db" {
 		t.Errorf("expected data/celerum.db path, got %v", cfg.Database.Path)
+	}
+	if cfg.LLM.Language != "en" {
+		t.Errorf("expected LLM language to default to en, got %s", cfg.LLM.Language)
 	}
 }
 

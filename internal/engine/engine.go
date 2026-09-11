@@ -5,9 +5,11 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"log"
 	"math/rand"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -195,20 +197,27 @@ func (e *Engine) BuildPayload(ctx context.Context, c model.Cluster, hash string)
 			}
 		}
 		sources[i] = model.SourceInfo{
-			Name:  name,
-			Tier:  a.FeedTier,
-			URL:   a.URL,
-			Title: a.Title,
+			Name:        name,
+			Tier:        a.FeedTier,
+			URL:         a.URL,
+			Title:       a.Title,
+			PublishedAt: a.PublishedAt.Unix(),
+		}
+	}
+
+	repFeedName := rep.FeedURL
+	for _, f := range e.cfg.Feeds {
+		if f.URL == rep.FeedURL && f.Name != "" {
+			repFeedName = f.Name
+			break
 		}
 	}
 
 	// Base fallback payload
 	payload := model.Payload{
 		ID:          hash,
+		FeedName:    repFeedName,
 		Title:       rep.Title,
-		Summary:     cluster.CleanText(rep.Description),
-		Takeaways:   []string{},
-		Sentiment:   nil,
 		Enriched:    false,
 		ClusterSize: len(c.Articles),
 		Score:       c.Score,
@@ -220,33 +229,93 @@ func (e *Engine) BuildPayload(ctx context.Context, c model.Cluster, hash string)
 		return payload
 	}
 
-	// Optional scrape if description is short
+	// Enrich with scraper if configured (scrape up to 3 articles in cluster)
+	maxScrape := len(c.Articles)
+	if maxScrape > 3 {
+		maxScrape = 3
+	}
+
 	content := rep.Description
-	if len(content) < 150 && e.cfg.Enrichment.Scraper != "none" {
-		scrapeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	if e.cfg.Enrichment.Scraper != "none" && e.scraper != nil {
+		scrapeCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 		defer cancel()
-		if scraped, err := e.scraper.FetchContent(scrapeCtx, rep.URL); err == nil && len(scraped) > len(content) {
-			content = scraped
+
+		if maxScrape == 1 {
+			if scraped, err := e.scraper.FetchContent(scrapeCtx, rep.URL); err == nil && strings.TrimSpace(scraped) != "" {
+				content = scraped
+			}
+		} else {
+			type scrapeResult struct {
+				name    string
+				title   string
+				content string
+			}
+			results := make([]scrapeResult, maxScrape)
+			var wg sync.WaitGroup
+
+			for i := 0; i < maxScrape; i++ {
+				wg.Add(1)
+				go func(idx int, art model.Article) {
+					defer wg.Done()
+					artContent := art.Description
+					if scraped, err := e.scraper.FetchContent(scrapeCtx, art.URL); err == nil && strings.TrimSpace(scraped) != "" {
+						artContent = scraped
+					}
+					name := art.FeedURL
+					for _, f := range e.cfg.Feeds {
+						if f.URL == art.FeedURL && f.Name != "" {
+							name = f.Name
+							break
+						}
+					}
+					results[idx] = scrapeResult{
+						name:    name,
+						title:   art.Title,
+						content: artContent,
+					}
+				}(i, c.Articles[i])
+			}
+			wg.Wait()
+
+			var sb strings.Builder
+			for i, r := range results {
+				if i > 0 {
+					sb.WriteString("\n\n---\n\n")
+				}
+				sb.WriteString(fmt.Sprintf("[Source %d: %s - %s]\n%s", i+1, r.name, r.title, r.content))
+			}
+			content = sb.String()
 		}
+	} else if maxScrape > 1 {
+		var sb strings.Builder
+		for i := 0; i < maxScrape; i++ {
+			art := c.Articles[i]
+			name := art.FeedURL
+			for _, f := range e.cfg.Feeds {
+				if f.URL == art.FeedURL && f.Name != "" {
+					name = f.Name
+					break
+				}
+			}
+			if i > 0 {
+				sb.WriteString("\n\n---\n\n")
+			}
+			sb.WriteString(fmt.Sprintf("[Source %d: %s - %s]\n%s", i+1, name, art.Title, art.Description))
+		}
+		content = sb.String()
 	}
 
 	// LLM summarization
-	llmCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	llmCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
 	summaryRes, err := e.summarizer.Summarize(llmCtx, rep.Title, content, e.cfg.LLM.Language)
 	if err != nil {
-		log.Printf("[warn] LLM summarization failed for cluster %s: %v (falling back to raw RSS)", hash, err)
+		log.Printf("[warn] LLM summarization failed for cluster %s: %v (falling back to raw alert)", hash, err)
 		return payload
 	}
 
-	payload.Title = summaryRes.Title
-	payload.Summary = summaryRes.Summary
-	payload.Takeaways = summaryRes.Takeaways
-	if summaryRes.Sentiment != "" {
-		sent := summaryRes.Sentiment
-		payload.Sentiment = &sent
-	}
+	payload.Content = summaryRes
 	payload.Enriched = true
 
 	return payload
@@ -364,22 +433,36 @@ func (e *Engine) Check(ctx context.Context) ([]model.Payload, error) {
 		hash := ComputeClusterHash(c)
 		rep := c.Representative
 
+		repFeedName := rep.FeedURL
+		for _, f := range e.cfg.Feeds {
+			if f.URL == rep.FeedURL && f.Name != "" {
+				repFeedName = f.Name
+				break
+			}
+		}
+
 		sources := make([]model.SourceInfo, len(c.Articles))
 		for i, a := range c.Articles {
+			name := a.FeedURL
+			for _, f := range e.cfg.Feeds {
+				if f.URL == a.FeedURL && f.Name != "" {
+					name = f.Name
+					break
+				}
+			}
 			sources[i] = model.SourceInfo{
-				Name:  a.FeedURL,
-				Tier:  a.FeedTier,
-				URL:   a.URL,
-				Title: a.Title,
+				Name:        name,
+				Tier:        a.FeedTier,
+				URL:         a.URL,
+				Title:       a.Title,
+				PublishedAt: a.PublishedAt.Unix(),
 			}
 		}
 
 		payloads = append(payloads, model.Payload{
 			ID:          hash,
+			FeedName:    repFeedName,
 			Title:       rep.Title,
-			Summary:     cluster.CleanText(rep.Description),
-			Takeaways:   []string{},
-			Sentiment:   nil,
 			Enriched:    false,
 			ClusterSize: len(c.Articles),
 			Score:       c.Score,

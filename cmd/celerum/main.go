@@ -10,6 +10,7 @@ import (
 	"syscall"
 	"time"
 
+	"celerum/internal/ai"
 	"celerum/internal/config"
 	"celerum/internal/dispatch"
 	"celerum/internal/engine"
@@ -114,11 +115,6 @@ func runCheck(args []string) {
 	for i, p := range payloads {
 		fmt.Printf("[%d] Score: %.2f | Sources: %d\n", i+1, p.Score, p.ClusterSize)
 		fmt.Printf("    Title: %s\n", p.Title)
-		if len(p.Summary) > 120 {
-			fmt.Printf("    Summary: %s...\n", p.Summary[:120])
-		} else if p.Summary != "" {
-			fmt.Printf("    Summary: %s\n", p.Summary)
-		}
 		for _, s := range p.Sources {
 			fmt.Printf("    • %s: %s\n", s.Name, s.URL)
 		}
@@ -153,33 +149,86 @@ func runTest(args []string) {
 		}
 
 		disp := dispatch.NewTelegramDispatcher(token, chatID)
-		testPayload := model.Payload{
-			ID:    "test-verification",
-			Title: "Celerum Telegram Connection Verified",
-			Summary: "Your Telegram Bot API credentials and channel permissions have been successfully verified.",
-			Takeaways: []string{
-				"Bot Token authenticated",
-				"Chat ID write permissions verified",
-				"HTML payload formatting active",
-			},
+
+		// 1. Fallback Alert (without LLM)
+		fmt.Printf("1/2: Sending fallback alert (without LLM) to Telegram chat %s...\n", chatID)
+		fallbackPayload := model.Payload{
+			ID:       "test-fallback",
+			FeedName: "Cointelegraph",
+			Title:    "Bitwise to put down Dogecoin ETF less than a year after launch",
+			Enriched: false,
 			Sources: []model.SourceInfo{
-				{Name: "Celerum Engine", URL: "https://github.com/rafifmsn/celerum", Title: "System Verification"},
+				{
+					Name:  "Cointelegraph",
+					URL:   "https://cointelegraph.com/news/bitwise-put-down-dogecoin-etf-year-launch?utm_source=rss_feed&utm_medium=rss&utm_campaign=rss_partner_inbound",
+					Title: "Bitwise to put down Dogecoin ETF less than a year after launch",
+				},
 			},
 			ClusterSize: 1,
-			Score:       10.0,
+			Score:       7.5,
 			Timestamp:   time.Now().Unix(),
 		}
 
-		fmt.Printf("Sending verification alert to Telegram chat %s...\n", chatID)
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-
-		if err := disp.Dispatch(ctx, testPayload); err != nil {
-			fmt.Fprintf(os.Stderr, "failed to deliver Telegram alert: %v\n", err)
+		ctx1, cancel1 := context.WithTimeout(context.Background(), 10*time.Second)
+		if err := disp.Dispatch(ctx1, fallbackPayload); err != nil {
+			cancel1()
+			fmt.Fprintf(os.Stderr, "failed to deliver fallback Telegram alert: %v\n", err)
 			os.Exit(1)
 		}
+		cancel1()
+		fmt.Println("Success: Fallback alert delivered.")
 
-		fmt.Println("Success: Telegram verification alert delivered.")
+		// 2. Enriched Alert (with live LLM synthesis)
+		fmt.Printf("\n2/2: Generating and sending enriched alert (with LLM) to Telegram chat %s...\n", chatID)
+		var enrichedContent string
+		if cfg.LLM.Enabled {
+			summarizer := ai.NewSummarizer(cfg)
+			llmCtx, cancelLLM := context.WithTimeout(context.Background(), 30*time.Second)
+			sampleTitle := "Longsys begins Hong Kong trading after HK$7.08 billion share sale"
+			sampleContent := "Longsys began trading in Hong Kong on September 8 after raising gross proceeds of HK$7.0775 billion, or about $903 million, in an IPO, according to Hong Kong Exchanges and Clearing. Shares opened roughly flat and were last reported at HK$235.8, marginally below the HK$236 offer price. That restrained debut came as Longsys reported an earnings surge, with net profit of RMB10.7 billion for the first half of 2026, more than 260 times the level a year earlier. Revenue rose 136.3% year over year to RMB24.1 billion. The company said it would direct most of its net IPO proceeds to research and development in chip design and advanced memory products."
+			fmt.Printf("Invoking LLM model %s via %s...\n", cfg.LLM.Model, cfg.LLM.Provider)
+			synth, err := summarizer.Summarize(llmCtx, sampleTitle, sampleContent, cfg.LLM.Language)
+			cancelLLM()
+			if err != nil {
+				fmt.Printf("[warn] LLM synthesis failed: %v (falling back to sample content)\n", err)
+				enrichedContent = "Longsys began trading in Hong Kong on September 8 after raising gross proceeds of HK$7.0775 billion ($903 million) in an IPO.\n\nShares opened roughly flat at HK$235.8 against the HK$236 offer price. The restrained debut came as Longsys reported 1H 2026 net profit surging to RMB10.7 billion on strong AI memory demand."
+			} else {
+				enrichedContent = synth
+				fmt.Println("LLM synthesis generated successfully.")
+			}
+		}
+
+		enrichedPayload := model.Payload{
+			ID:       "test-enriched",
+			FeedName: "Cointelegraph",
+			Title:    "Longsys begins Hong Kong trading after HK$7.08 billion share sale",
+			Content:  enrichedContent,
+			Enriched: true,
+			Sources: []model.SourceInfo{
+				{
+					Name:  "Cointelegraph",
+					URL:   "https://cointelegraph.com/news/bitwise-put-down-dogecoin-etf-year-launch",
+					Title: "Longsys begins Hong Kong trading after HK$7.08 billion share sale",
+				},
+				{
+					Name:  "CoinDesk",
+					URL:   "https://coindesk.com/markets/2026/09/08/longsys-ipo-debut-hong-kong",
+					Title: "AI Memory Maker Longsys Raises $903M in Muted Debut",
+				},
+			},
+			ClusterSize: 2,
+			Score:       12.5,
+			Timestamp:   time.Now().Unix(),
+		}
+
+		ctx2, cancel2 := context.WithTimeout(context.Background(), 10*time.Second)
+		if err := disp.Dispatch(ctx2, enrichedPayload); err != nil {
+			cancel2()
+			fmt.Fprintf(os.Stderr, "failed to deliver enriched Telegram alert: %v\n", err)
+			os.Exit(1)
+		}
+		cancel2()
+		fmt.Println("Success: Enriched alert delivered.")
 	default:
 		fmt.Fprintf(os.Stderr, "unknown test target: %s (supported: telegram)\n", target)
 		os.Exit(1)

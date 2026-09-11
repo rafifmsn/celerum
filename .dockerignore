@@ -1,0 +1,10 @@
+.git
+.github
+.env
+.env.*
+data/
+celerum
+celerum.exe
+*.db
+*.db-journal
+

@@ -60,18 +60,19 @@ flowchart LR
 
 3. **Allocation-Free Jaccard & Union-Find Clustering:**
    Candidate pairs are evaluated using a linear two-pointer scan across sorted `[]uint64` shingle slices to calculate Jaccard similarity without heap allocations.
-   Pairs exceeding the similarity threshold ($\tau \ge 0.40$) are merged via Disjoint-Set Union (Union-Find) with path compression, collapsing multi-source coverage into cohesive event clusters.
+   Pairs exceeding the similarity threshold ($\tau \ge 0.28$) are merged via Disjoint-Set Union (Union-Find) with path compression, collapsing multi-source coverage into cohesive event clusters.
 
 4. **Multi-Factor Velocity Scoring:**
    Clusters are scored dynamically based on cluster size $|C_k|$ (multi-source verification), publisher tier weights, and market keyword boosts, balanced against a linear time decay penalty.
 
 5. **Hybrid Alert Cadence:**
    - **Immediate Breaking Alert:** Clusters exceeding the velocity threshold ($S(C_k) \ge \tau_{\text{break}}$) trigger immediate dispatch. A deterministic SHA-256 fingerprint is recorded in SQLite to eliminate duplicate notifications.
-   - **Periodic Heartbeat Digest:** Clusters below the threshold remain in the 3-hour sliding window. When the 1-hour flush ticker fires, Celerum dispatches the top-$K$ undispatched clusters as a periodic digest.
+   - **Periodic Heartbeat Digest:** Clusters below the threshold remain in the 3-hour sliding window. When the 1-hour flush ticker fires, Celerum dispatches the top-K undispatched clusters as a periodic digest.
 
 6. **Resilient Synthesis & Delivery:**
-   Qualified clusters trigger structured JSON completion through OpenAI-compatible LLM endpoints for summaries, key takeaways, and market sentiment.
-   If AI providers time out or fail, Celerum automatically falls back to raw RSS descriptions (`enriched: false`), guaranteeing breaking alerts are never lost.
+   Qualified clusters trigger high-density executive briefings through OpenAI-compatible LLM endpoints with preserved metrics, figures, and direct formatting.
+   When scraping is enabled, Celerum concurrently scrapes up to 3 articles per cluster to feed multi-source context into the LLM.
+   If AI providers time out or fail, Celerum automatically falls back to verified source links (`enriched: false`), allowing downstream platforms like Telegram to natively unfurl rich link previews.
    Failed webhook dispatches are queued in SQLite, where a background worker retries them every 1 minute with exponential backoff up to 5 attempts.
 
 For the comprehensive technical specification and mathematical formulas, see [docs/architecture.md](docs/architecture.md).
@@ -90,7 +91,7 @@ For the comprehensive technical specification and mathematical formulas, see [do
    ./celerum init
    ```
 
-   This generates a starter `celerum.yaml` template with overwrite protection.
+   This generates a starter `celerum.yaml` configuration template with overwrite protection.
 
 3. **Configure credentials:**
 
@@ -116,7 +117,7 @@ For the comprehensive technical specification and mathematical formulas, see [do
    Inspects live feed clustering and scores on stdout without dispatching webhooks or making LLM calls.
 
 6. **Execute single pass or start continuous daemon:**  
-   Run a single cycle (forces an immediate top-$K$ flush and exits with code 0, ideal for cron jobs or CI):
+   Run a single cycle (forces an immediate top-K flush and exits with code 0, ideal for cron jobs or CI):
    ```bash
    ./celerum run --once
    ```
@@ -125,7 +126,7 @@ For the comprehensive technical specification and mathematical formulas, see [do
    ./celerum run
    ```
 
-## Production Deployment (Docker)
+## Production Deployment
 
 For continuous 24/7 background operation on a server or VPS, run Celerum as a container managed by Docker Compose.
 The service restarts automatically across host reboots or unexpected exits via `restart: unless-stopped`.
@@ -156,7 +157,7 @@ The service restarts automatically across host reboots or unexpected exits via `
 
 The database and cached cursors are persisted in `./data` on the host across container upgrades.
 
-## Configuration Reference (`celerum.yaml`)
+## Configuration Reference
 
 ```yaml
 version: "1"
@@ -169,9 +170,9 @@ engine:
   window_duration: "3h"
   flush_interval: "1h"
   max_articles_per_feed: 20
-  similarity_threshold: 0.40
+  similarity_threshold: 0.28
   breaking_threshold: 12.0
-  top_k: 5
+  top_k: 2
 
 feeds:
   - name: "CoinDesk"
@@ -199,9 +200,11 @@ enrichment:
 llm:
   enabled: true
   provider: "openrouter" # openrouter | deepseek | openai | groq | ollama
-  model: "deepseek/deepseek-chat"
+  base_url: "" # optional, defaults to provider endpoint
+  model: "meta-llama/llama-3.1-8b-instruct"
   api_key: "${LLM_API_KEY}"
-  language: "id" # target language for summary (e.g. en, id, es, pt-BR)
+  language: "en" # target language for summary (e.g. en, id, es, pt-BR)
+  system_prompt: "" # optional custom prompt with {{language}} placeholder
 
 dispatch:
   telegram:
@@ -223,7 +226,7 @@ Run the automated test suite across all packages:
 go test -v ./...
 ```
 
-## Operational Tuning & Case Study
+## Operational Tuning
 
 Balancing freshness against multi-source corroboration depends on the velocity of your monitored feeds.
 Below is an architectural breakdown of buffer dynamics and recommended tuning profiles.
@@ -258,9 +261,6 @@ engine:
   top_k: 3 # Keep periodic digest payloads short and focused
 ```
 
-- **15-Minute Digest Cadence:**
-  Ensures monitoring desks receive timely market digests without waiting an hour during quiet cycles.
-- **Tighter 1-Hour Window:**
-  Ensures stale single-source noise exits memory promptly after 60 minutes.
-- **Calibrated Breaking Threshold (9.0):**
-  A breaking Tier-1 wire reported by two outlets (e.g. Bloomberg and Reuters) scores roughly $2 \times 3.0 + 2 \times 2.0 = 10.0$, immediately crossing the 9.0 threshold and delivering within 120 seconds rather than waiting for any flush timer.
+- 15-Minute Digest Cadence ensures monitoring desks receive timely market digests without waiting an hour during quiet cycles.
+- Tighter 1-Hour Window ensures stale single-source noise exits memory promptly after 60 minutes.
+- A breaking Tier-1 wire reported by two outlets (e.g. Bloomberg and Reuters) scores roughly $2 \times 3.0 + 2 \times 2.0 = 10.0$, immediately crossing the 9.0 threshold and delivering within 120 seconds rather than waiting for any flush timer.

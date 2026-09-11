@@ -2,19 +2,19 @@ package model
 
 // SourceInfo represents an individual source within a dispatched cluster payload.
 type SourceInfo struct {
-	Name  string `json:"name"`
-	Tier  int    `json:"tier"`
-	URL   string `json:"url"`
-	Title string `json:"title"`
+	Name        string `json:"name"`
+	Tier        int    `json:"tier"`
+	URL         string `json:"url"`
+	Title       string `json:"title"`
+	PublishedAt int64  `json:"published_at"`
 }
 
-// Payload is the standardized data structure sent to Telegram and HTTP webhooks.
+// Payload represents the alert delivered to downstream dispatchers.
 type Payload struct {
 	ID          string       `json:"id"`
+	FeedName    string       `json:"feed_name"`
 	Title       string       `json:"title"`
-	Summary     string       `json:"summary"`
-	Takeaways   []string     `json:"takeaways"`
-	Sentiment   *string      `json:"sentiment"`
+	Content     string       `json:"content"`
 	Enriched    bool         `json:"enriched"`
 	ClusterSize int          `json:"cluster_size"`
 	Score       float64      `json:"score"`

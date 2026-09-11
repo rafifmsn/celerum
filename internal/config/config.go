@@ -65,12 +65,13 @@ type EnrichmentConfig struct {
 
 // LLMConfig controls AI summarization.
 type LLMConfig struct {
-	Enabled  bool   `yaml:"enabled"`
-	Provider string `yaml:"provider"`
-	BaseURL  string `yaml:"base_url"`
-	Model    string `yaml:"model"`
-	APIKey   string `yaml:"api_key"`
-	Language string `yaml:"language"`
+	Enabled      bool   `yaml:"enabled"`
+	Provider     string `yaml:"provider"`
+	BaseURL      string `yaml:"base_url"`
+	Model        string `yaml:"model"`
+	APIKey       string `yaml:"api_key"`
+	Language     string `yaml:"language"`
+	SystemPrompt string `yaml:"system_prompt"`
 }
 
 // DispatchConfig holds webhook destinations.
@@ -215,7 +216,7 @@ func (c *Config) ValidateAndSetDefaults() error {
 		c.Engine.MaxArticlesPerFeed = 20
 	}
 	if c.Engine.SimilarityThreshold <= 0 {
-		c.Engine.SimilarityThreshold = 0.40
+		c.Engine.SimilarityThreshold = 0.28
 	}
 	if c.Engine.BreakingThreshold <= 0 {
 		c.Engine.BreakingThreshold = 12.0
@@ -244,7 +245,7 @@ func (c *Config) ValidateAndSetDefaults() error {
 			c.LLM.Model = "gpt-4o-mini"
 		}
 		if c.LLM.Language == "" {
-			c.LLM.Language = "id"
+			c.LLM.Language = "en"
 		}
 	}
 
@@ -276,7 +277,7 @@ engine:
   window_duration: "3h"
   flush_interval: "1h"
   max_articles_per_feed: 20
-  similarity_threshold: 0.40
+  similarity_threshold: 0.28
   breaking_threshold: 12.0
   top_k: 5
 
@@ -309,7 +310,7 @@ llm:
   base_url: "" # optional, defaults to provider API endpoint
   model: "deepseek/deepseek-chat"
   api_key: "${LLM_API_KEY}"
-  language: "id"
+  language: "en"
 
 dispatch:
   telegram:
