@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -101,7 +102,7 @@ func TestEndToEndPipeline(t *testing.T) {
 			"choices": [
 				{
 					"message": {
-						"content": "{\"title\": \"The Fed Memangkas Suku Bunga 50 Bps\", \"summary\": \"Bank sentral AS memangkas suku bunga acuan sebesar 50 basis poin guna menjaga stabilitas pasar tenaga kerja.\", \"takeaways\": [\"Pemangkasan 50 bps dimulai\", \"Siklus pelonggaran moneter aktif\"], \"sentiment\": \"bullish\"}"
+						"content": "Bank sentral AS memangkas suku bunga acuan sebesar 50 basis poin guna menjaga stabilitas pasar tenaga kerja.\n\n• Pemangkasan 50 bps dimulai\n• Siklus pelonggaran moneter aktif"
 					}
 				}
 			]
@@ -190,17 +191,14 @@ func TestEndToEndPipeline(t *testing.T) {
 	if p.ClusterSize != 2 {
 		t.Errorf("expected cluster size 2 for Bloomberg + Reuters, got %d", p.ClusterSize)
 	}
+	if p.FeedName != "Bloomberg" {
+		t.Errorf("expected FeedName 'Bloomberg', got %q", p.FeedName)
+	}
 	if !p.Enriched {
 		t.Errorf("expected payload to be enriched by LLM")
 	}
-	if p.Title != "The Fed Memangkas Suku Bunga 50 Bps" {
-		t.Errorf("expected Indonesian LLM title, got: %s", p.Title)
-	}
-	if len(p.Takeaways) != 2 {
-		t.Errorf("expected 2 takeaways, got %d", len(p.Takeaways))
-	}
-	if p.Sentiment == nil || *p.Sentiment != "bullish" {
-		t.Errorf("expected sentiment 'bullish'")
+	if !strings.Contains(p.Content, "50 basis poin") {
+		t.Errorf("expected LLM content to contain synthesis, got: %s", p.Content)
 	}
 	if len(p.Sources) != 2 {
 		t.Errorf("expected 2 source entries in payload, got %d", len(p.Sources))

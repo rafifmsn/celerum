@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -141,6 +142,97 @@ func TestEngineCheck(t *testing.T) {
 	}
 	if payloads[0].Title != "Federal Reserve interest rate announcement live today" {
 		t.Errorf("title mismatch: %s", payloads[0].Title)
+	}
+}
+
+type testScraper struct {
+	data map[string]string
+}
+
+func (s *testScraper) FetchContent(ctx context.Context, targetURL string) (string, error) {
+	return s.data[targetURL], nil
+}
+
+type testSummarizer struct {
+	capturedContent string
+}
+
+func (s *testSummarizer) Summarize(ctx context.Context, title, content, language string) (string, error) {
+	s.capturedContent = content
+	return "Multi-source consolidated briefing", nil
+}
+
+func TestBuildPayloadMultiSourceScraping(t *testing.T) {
+	cfg := &config.Config{
+		Enrichment: config.EnrichmentConfig{
+			Scraper: "direct",
+		},
+		LLM: config.LLMConfig{
+			Enabled:  true,
+			Language: "en",
+		},
+		Feeds: []config.FeedConfig{
+			{Name: "CoinDesk", URL: "https://coindesk.com/rss", Tier: 1},
+			{Name: "Cointelegraph", URL: "https://cointelegraph.com/rss", Tier: 2},
+		},
+	}
+
+	mockScraper := &testScraper{
+		data: map[string]string{
+			"https://coindesk.com/article-1":      "CoinDesk reporting full article details on $900M IPO.",
+			"https://cointelegraph.com/article-2": "Cointelegraph covering the same HK listing with 15% upsize option.",
+		},
+	}
+	mockSum := &testSummarizer{}
+
+	eng := &Engine{
+		cfg:        cfg,
+		scraper:    mockScraper,
+		summarizer: mockSum,
+	}
+
+	articles := []model.Article{
+		{
+			FeedURL:     "https://coindesk.com/rss",
+			Title:       "Longsys debuts in Hong Kong",
+			Description: "Short summary 1",
+			URL:         "https://coindesk.com/article-1",
+		},
+		{
+			FeedURL:     "https://cointelegraph.com/rss",
+			Title:       "Longsys starts HK trading",
+			Description: "Short summary 2",
+			URL:         "https://cointelegraph.com/article-2",
+		},
+	}
+
+	cluster := model.Cluster{
+		ID:             "cluster-1",
+		Articles:       articles,
+		Representative: articles[0],
+		Score:          15.0,
+	}
+
+	payload := eng.BuildPayload(context.Background(), cluster, "hash-test")
+
+	if !payload.Enriched {
+		t.Errorf("expected payload to be enriched")
+	}
+	if payload.Content != "Multi-source consolidated briefing" {
+		t.Errorf("expected consolidated content, got: %s", payload.Content)
+	}
+
+	if !strings.Contains(mockSum.capturedContent, "[Source 1: CoinDesk - Longsys debuts in Hong Kong]") {
+		t.Errorf("expected Source 1 in LLM content, got: %s", mockSum.capturedContent)
+	}
+	if !strings.Contains(mockSum.capturedContent, "CoinDesk reporting full article details on $900M IPO.") {
+		t.Errorf("expected Source 1 scraped text in LLM content, got: %s", mockSum.capturedContent)
+	}
+	if !strings.Contains(mockSum.capturedContent, "[Source 2: Cointelegraph - Longsys starts HK trading]") {
+		t.Errorf("expected Source 2 in LLM content, got: %s", mockSum.capturedContent)
+	}
+	if !strings.Contains(mockSum.capturedContent, "Cointelegraph covering the same HK listing with 15% upsize option.") {
+		t.Errorf("expected Source 2 scraped text in LLM content, got: %s", mockSum.capturedContent)
 	}
 }
 

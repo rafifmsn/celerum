@@ -126,10 +126,54 @@ Celerum avoids both the latency of rigid batch windows and the silence of thresh
 
 ## 6. Failure Recovery and External Service Fallbacks
 
-- **Web Scraping Timeout:** Capped at 5 seconds.
-  Falls back immediately to the existing RSS description if direct scraping or Jina Reader fails.
-- **LLM Summarization Outage:** Capped at 10 seconds with 2 immediate retries.
-  If unreachable or rate-limited, Celerum dispatches the representative RSS title and description with `enriched: false`.
+- **Multi-Source Scraping:**
+  Celerum identifies up to the top 3 articles in a cluster and fetches their full text concurrently via goroutines within a 10-second timeout.
+  Scraped texts are structured as numbered source blocks to provide multi-perspective context to the LLM.
+  If scraping fails or is disabled, Celerum falls back immediately to the existing RSS descriptions.
+- **LLM Summarization Outage:**
+  Capped at 30 seconds with retry.
+  If unreachable or rate-limited, Celerum dispatches verified source links with `enriched: false`.
+  Downstream platforms like Telegram cleanly unfurl the native OpenGraph link preview card.
   Breaking news is never delayed or dropped due to AI provider downtime.
-- **Webhook Retry Queue:** Delivery failures write to SQLite table `webhook_retries`.
+- **Webhook Retry Queue:**
+  Delivery failures write to SQLite table `webhook_retries`.
   A background worker retries pending items with exponential backoff up to 5 attempts.
+
+## 7. Standardized Payload and Dispatch Layout
+
+Dispatched event alerts adhere to a deterministic JSON payload schema:
+
+```json
+{
+  "id": "cluster-uuid",
+  "feed_name": "CoinDesk",
+  "title": "Representative Headline",
+  "content": "Synthesized narrative briefing",
+  "enriched": true,
+  "cluster_size": 2,
+  "score": 14.5,
+  "sources": [
+    {
+      "name": "CoinDesk",
+      "tier": 1,
+      "url": "https://coindesk.com/...",
+      "title": "Headline 1",
+      "published_at": 1789139040
+    }
+  ],
+  "timestamp": 1789139100
+}
+```
+
+### Telegram Alert Formatting
+
+- **Enriched Mode (`enriched: true`):**
+  Begins with a bold `<b>AI Summary - {Unique Publishers}</b>` header.
+  Follows with the pure narrative synthesis body.
+  Concludes with a `<b>Coverage:</b>` section containing newline-separated article links without bullet points.
+- **Fallback Mode (`enriched: false`):**
+  Omits the AI Summary header.
+  Leads directly with `<b>Coverage:</b>` and newline-separated source links.
+  Telegram automatically unfurls the native link preview for the primary source URL.
+- **Source Timestamp Format:**
+  Each source link is appended with a compact UTC timestamp formatted as `(Day Mon HH:MM UTC)` without the year, such as `(11 Sep 15:04 UTC)`.

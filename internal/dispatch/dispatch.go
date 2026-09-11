@@ -47,37 +47,47 @@ func (t *TelegramDispatcher) Name() string {
 func FormatTelegramMessage(p model.Payload) string {
 	var sb strings.Builder
 
-	// Header
-	sb.WriteString("<b>")
-	sb.WriteString(html.EscapeString(p.Title))
-	sb.WriteString("</b>\n\n")
+	if p.Enriched && strings.TrimSpace(p.Content) != "" {
+		seen := make(map[string]bool)
+		var sites []string
+		for _, s := range p.Sources {
+			if s.Name != "" && !seen[s.Name] {
+				seen[s.Name] = true
+				sites = append(sites, s.Name)
+			}
+		}
+		if len(sites) == 0 && p.FeedName != "" {
+			sites = append(sites, p.FeedName)
+		}
 
-	// Summary
-	if p.Summary != "" {
-		sb.WriteString(html.EscapeString(p.Summary))
+		sb.WriteString("<b>AI Summary - ")
+		sb.WriteString(html.EscapeString(strings.Join(sites, ", ")))
+		sb.WriteString("</b>\n\n")
+
+		sb.WriteString(strings.TrimSpace(p.Content))
 		sb.WriteString("\n\n")
 	}
 
-	// Takeaways
-	if len(p.Takeaways) > 0 {
-		sb.WriteString("<b>Key Takeaways:</b>\n")
-		for _, item := range p.Takeaways {
-			sb.WriteString("• ")
-			sb.WriteString(html.EscapeString(item))
-			sb.WriteString("\n")
-		}
-		sb.WriteString("\n")
-	}
-
-	// Sources
+	// Coverage
 	if len(p.Sources) > 0 {
-		sb.WriteString("<b>Sources:</b>\n")
+		sb.WriteString("<b>Coverage:</b>\n")
 		for _, s := range p.Sources {
-			sb.WriteString(fmt.Sprintf("• <a href=\"%s\">%s</a>: %s\n",
-				html.EscapeString(s.URL),
-				html.EscapeString(s.Name),
-				html.EscapeString(s.Title),
-			))
+			if s.PublishedAt > 0 {
+				t := time.Unix(s.PublishedAt, 0).UTC()
+				dateStr := strings.TrimPrefix(t.Format("02 Jan 15:04 UTC"), "0")
+				sb.WriteString(fmt.Sprintf("<a href=\"%s\">%s</a>: %s (%s)\n",
+					html.EscapeString(s.URL),
+					html.EscapeString(s.Name),
+					html.EscapeString(s.Title),
+					dateStr,
+				))
+			} else {
+				sb.WriteString(fmt.Sprintf("<a href=\"%s\">%s</a>: %s\n",
+					html.EscapeString(s.URL),
+					html.EscapeString(s.Name),
+					html.EscapeString(s.Title),
+				))
+			}
 		}
 	}
 
