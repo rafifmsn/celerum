@@ -50,89 +50,81 @@ For the comprehensive technical specification, mathematical models, and subsyste
 
 ## Quickstart
 
-### 1. Build the Binary
+1. **Build the binary:**
 
-```bash
-go build -o celerum ./cmd/celerum
-```
+   ```bash
+   go build -o celerum ./cmd/celerum
+   ```
 
-### 2. Initialize Configuration
+2. **Initialize configuration:**
 
-```bash
-./celerum init
-```
+   ```bash
+   ./celerum init
+   ```
 
-This generates a starter `celerum.yaml` template with overwrite protection.
+   This generates a starter `celerum.yaml` template with overwrite protection.
 
-### 3. Configure Credentials
+3. **Configure credentials:**
 
-Copy `.env.example` to `.env` and fill in your keys:
+   ```bash
+   cp .env.example .env
+   ```
 
-```bash
-cp .env.example .env
-```
+   Fill in your tokens in `.env`.
+   Celerum automatically loads `.env` on startup without requiring manual `export` commands.
 
-Celerum automatically parses `.env` on startup without requiring manual `export` commands.
+4. **Verify Telegram connection:**
 
-### 4. Verify Telegram Connection
+   ```bash
+   ./celerum test telegram
+   ```
 
-```bash
-./celerum test telegram
-```
+5. **Dry-run check (zero external cost):**
 
-### 5. Dry-Run Check (Zero API Spend)
+   ```bash
+   ./celerum check
+   ```
 
-```bash
-./celerum check
-```
+   Inspects live feed clustering and scores on stdout without dispatching webhooks or making LLM calls.
 
-Inspect live feed clustering and heuristic scores on stdout without dispatching webhooks or making LLM calls.
-
-### 6. Run Once or Start Continuous Daemon
-
-Execute a single pass:
-
-```bash
-./celerum run --once
-```
-
-Start the continuous background worker:
-
-```bash
-./celerum run
-```
+6. **Execute single pass or start daemon:**
+   Run a single cycle:
+   ```bash
+   ./celerum run --once
+   ```
+   Or start the continuous background worker:
+   ```bash
+   ./celerum run
+   ```
 
 ## Production Deployment (Docker)
 
 For continuous 24/7 background operation on a server or VPS, run Celerum as a container managed by Docker Compose.
 The service restarts automatically across host reboots or unexpected exits via `restart: unless-stopped`.
 
-### 1. Configure Secrets and Configuration
+1. **Configure environment and feeds:**
 
-Ensure `.env` contains your API tokens and `celerum.yaml` contains your feed configuration:
+   ```bash
+   cp .env.example .env
+   cp celerum.yaml.example celerum.yaml
+   ```
 
-```bash
-cp .env.example .env
-cp celerum.yaml.example celerum.yaml
-```
+2. **Start the container stack:**
 
-### 2. Start the Service
+   ```bash
+   docker compose up -d
+   ```
 
-```bash
-docker compose up -d
-```
+3. **Inspect live logs:**
 
-### 3. Monitor Logs
+   ```bash
+   docker compose logs -f celerum
+   ```
 
-```bash
-docker compose logs -f celerum
-```
-
-### 4. Stop the Service
-
-```bash
-docker compose down
-```
+4. **Stop the service:**
+   ```bash
+   docker compose down
+   ```
 
 The database and cached cursors are persisted in `./data` on the host across container upgrades.
 
