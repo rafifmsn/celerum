@@ -112,16 +112,16 @@ Because $S(C_k) = 12.92 \ge \tau_{\text{break}}$ (12.0), the cluster crosses the
 
 Celerum avoids both the latency of rigid batch windows and the silence of threshold-only alerts through a hybrid dual-cadence dispatch mechanism:
 
-| Trigger Mechanism             | Condition                                      | Dispatch Action                                           | Deduplication                                        |
-| :---------------------------- | :--------------------------------------------- | :-------------------------------------------------------- | :--------------------------------------------------- |
-| **Immediate Breaking Alert**  | Cluster score $S(C_k) \ge \tau_{\text{break}}$ | Immediate push to Telegram and webhooks                   | Dispatches once; SHA-256 fingerprint saved to SQLite |
-| **Periodic Heartbeat Digest** | 1-hour flush timer expires                     | Dispatches top-$K$ undispatched clusters in active window | Skips clusters already alerted during the window     |
+| Trigger Mechanism             | Condition                                      | Dispatch Action                                         | Deduplication                                        |
+| :---------------------------- | :--------------------------------------------- | :------------------------------------------------------ | :--------------------------------------------------- |
+| **Immediate Breaking Alert**  | Cluster score $S(C_k) \ge \tau_{\text{break}}$ | Immediate push to Telegram and webhooks                 | Dispatches once; SHA-256 fingerprint saved to SQLite |
+| **Periodic Heartbeat Digest** | 1-hour flush timer expires                     | Dispatches top-K undispatched clusters in active window | Skips clusters already alerted during the window     |
 
 ### Decision Flow
 
 1. **Score Evaluation:** Each polling cycle evaluates newly formed or updated clusters $C_k$ against the velocity threshold $\tau_{\text{break}}$.
 2. **Immediate Path:** If $S(C_k) \ge \tau_{\text{break}}$, Celerum checks SQLite table `dispatched_clusters`. If not previously dispatched, the cluster is immediately synthesized and alerted.
-3. **Heartbeat Path:** Clusters below the threshold remain in the 3-hour sliding window buffer. When the 1-hour flush ticker fires, Celerum ranks remaining undispatched clusters and flushes the top-$K$ as a periodic digest.
+3. **Heartbeat Path:** Clusters below the threshold remain in the 3-hour sliding window buffer. When the 1-hour flush ticker fires, Celerum ranks remaining undispatched clusters and flushes the top-K as a periodic digest.
 4. **Deduplication:** Dispatched cluster fingerprints persist in SQLite with automatic 7-day TTL cleanup, preventing repeated alerts for identical event coverage across cycles.
 
 ## 6. Failure Recovery and External Service Fallbacks

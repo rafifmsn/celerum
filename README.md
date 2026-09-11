@@ -117,7 +117,7 @@ For the comprehensive technical specification and mathematical formulas, see [do
    Inspects live feed clustering and scores on stdout without dispatching webhooks or making LLM calls.
 
 6. **Execute single pass or start continuous daemon:**  
-   Run a single cycle (forces an immediate top-$K$ flush and exits with code 0, ideal for cron jobs or CI):
+   Run a single cycle (forces an immediate top-K flush and exits with code 0, ideal for cron jobs or CI):
    ```bash
    ./celerum run --once
    ```
