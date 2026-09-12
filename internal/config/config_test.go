@@ -19,6 +19,7 @@ feeds:
     tier: 1
 llm:
   enabled: true
+  api_key: "test-llm-key"
 `
 	if err := os.WriteFile(configPath, []byte(content), 0644); err != nil {
 		t.Fatalf("failed to write test config: %v", err)
@@ -79,4 +80,30 @@ dispatch:
 		t.Errorf("expected chat id expanded, got %s", cfg.Dispatch.Telegram.ChatID)
 	}
 }
+
+
+func TestValidation_FirecrawlKey(t *testing.T) {
+	cfgMissing := &Config{
+		Feeds: []FeedConfig{{URL: "https://example.com/rss"}},
+		Enrichment: EnrichmentConfig{
+			Scraper:         "firecrawl",
+			FirecrawlAPIKey: "",
+		},
+	}
+	if err := cfgMissing.ValidateAndSetDefaults(); err == nil {
+		t.Errorf("expected error when firecrawl scraper enabled without firecrawl_api_key, got nil")
+	}
+
+	cfgValid := &Config{
+		Feeds: []FeedConfig{{URL: "https://example.com/rss"}},
+		Enrichment: EnrichmentConfig{
+			Scraper:         "firecrawl",
+			FirecrawlAPIKey: "fc-test-key",
+		},
+	}
+	if err := cfgValid.ValidateAndSetDefaults(); err != nil {
+		t.Errorf("expected valid firecrawl key to pass, got: %v", err)
+	}
+}
+
 

@@ -34,5 +34,40 @@ func TestScrapers(t *testing.T) {
 	if contentDirect != "Major Regulatory Decision The regulator approved the ETF filing." {
 		t.Errorf("direct scraper output mismatch: %q", contentDirect)
 	}
+
+	// 3. Firecrawl scraper
+	fcServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer test-fc-key" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		if r.Header.Get("Content-Type") != "application/json" {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"success":true,"data":{"markdown":"# Firecrawl Title\n\nFull article markdown body."}}`))
+	}))
+	defer fcServer.Close()
+
+	fcScraper := &FirecrawlScraper{
+		client:  fcServer.Client(),
+		apiKey:  "test-fc-key",
+		baseURL: fcServer.URL,
+	}
+	contentFC, err := fcScraper.FetchContent(context.Background(), "https://example.com/news")
+	if err != nil {
+		t.Fatalf("firecrawl scraper failed: %v", err)
+	}
+	if contentFC != "# Firecrawl Title\n\nFull article markdown body." {
+		t.Errorf("firecrawl scraper output mismatch: %q", contentFC)
+	}
+
+	// Verify NewScraper constructs FirecrawlScraper
+	cfgFC := &config.Config{Enrichment: config.EnrichmentConfig{Scraper: "firecrawl", FirecrawlAPIKey: "test-fc-key"}}
+	scraperFactory := NewScraper(cfgFC)
+	if _, ok := scraperFactory.(*FirecrawlScraper); !ok {
+		t.Errorf("expected *FirecrawlScraper from NewScraper, got %T", scraperFactory)
+	}
 }
 

@@ -78,6 +78,7 @@ flowchart LR
    Failed webhook dispatches are queued in SQLite, where a background worker retries them every 1 minute with exponential backoff up to 5 attempts.
 
 For the comprehensive technical specification and mathematical formulas, see [docs/architecture.md](docs/architecture.md).
+For operational boundaries, direct scraper caveats, and paywall considerations, see [docs/limitations.md](docs/limitations.md).
 
 ## Quickstart
 
@@ -196,8 +197,9 @@ keywords:
     - "/press-releases/"
 
 enrichment:
-  scraper: "none" # none | direct | jina
+  scraper: "none" # none | direct | jina | firecrawl
   jina_api_key: "${JINA_API_KEY}"
+  firecrawl_api_key: "${FIRECRAWL_API_KEY}"
 
 llm:
   enabled: true
@@ -296,3 +298,15 @@ engine:
 - 15-Minute Digest Cadence ensures monitoring desks receive timely market digests without waiting an hour during quiet cycles.
 - Tighter 1-Hour Window ensures stale single-source noise exits memory promptly after 60 minutes.
 - A breaking Tier-1 wire reported by two outlets (e.g. Bloomberg and Reuters) scores roughly $2 \times 3.0 + 2 \times 2.0 = 10.0$, immediately crossing the 9.0 threshold and delivering within 120 seconds rather than waiting for any flush timer.
+
+## Limitations & Edge Cases
+
+- **Direct Scraper (`scraper: direct`):**
+  Performs basic HTTP GET requests and HTML tag stripping without rate-limiting, IP rotation, or anti-bot challenge solving.
+  Target publishers fronted by strict WAFs or Cloudflare may return HTTP 403 or 429 status codes.
+
+- **Paywalls & Protected Feeds:**
+  Paywalled sites may yield subscription prompts that get ingested into the LLM context.
+  Using `scraper: none` avoids external web scraping entirely, relying cleanly on RSS title and description payloads.
+
+For detailed edge cases and recommended mitigations, refer to [docs/limitations.md](docs/limitations.md).
