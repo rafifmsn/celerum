@@ -99,7 +99,14 @@ func (e *Engine) PollFeeds(ctx context.Context) error {
 		wg.Add(1)
 		go func(fc config.FeedConfig) {
 			defer wg.Done()
-			etag, lastMod, _, _ := e.store.GetFeedState(fc.URL)
+			var etag, lastMod string
+			e.mu.Lock()
+			hasBuffered := len(e.feedBuffers[fc.URL]) > 0
+			e.mu.Unlock()
+
+			if hasBuffered {
+				etag, lastMod, _, _ = e.store.GetFeedState(fc.URL)
+			}
 
 			res, err := e.ingester.FetchFeed(ctx, fc, etag, lastMod)
 			if err != nil {

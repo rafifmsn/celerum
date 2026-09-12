@@ -59,8 +59,9 @@ type KeywordsConfig struct {
 
 // EnrichmentConfig controls optional scraping.
 type EnrichmentConfig struct {
-	Scraper    string `yaml:"scraper"`
-	JinaAPIKey string `yaml:"jina_api_key"`
+	Scraper         string `yaml:"scraper"`
+	JinaAPIKey      string `yaml:"jina_api_key"`
+	FirecrawlAPIKey string `yaml:"firecrawl_api_key"`
 }
 
 // LLMConfig controls AI summarization.
@@ -249,6 +250,12 @@ func (c *Config) ValidateAndSetDefaults() error {
 		}
 	}
 
+	if strings.ToLower(strings.TrimSpace(c.Enrichment.Scraper)) == "firecrawl" {
+		if strings.TrimSpace(c.Enrichment.FirecrawlAPIKey) == "" {
+			return fmt.Errorf("enrichment scraper is set to \"firecrawl\" but firecrawl_api_key is missing")
+		}
+	}
+
 	if c.Dispatch.Telegram.Enabled {
 		if c.Dispatch.Telegram.BotToken == "" || c.Dispatch.Telegram.ChatID == "" {
 			return fmt.Errorf("telegram dispatch enabled but bot_token or chat_id is missing")
@@ -301,8 +308,9 @@ keywords:
     - "/press-releases/"
 
 enrichment:
-  scraper: "none" # none | direct | jina
+  scraper: "none" # none | direct | jina | firecrawl
   jina_api_key: "${JINA_API_KEY}"
+  firecrawl_api_key: "${FIRECRAWL_API_KEY}"
 
 llm:
   enabled: false

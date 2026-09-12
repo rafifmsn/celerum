@@ -1,7 +1,9 @@
 package enrich
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -103,14 +105,96 @@ func (s *DirectScraper) FetchContent(ctx context.Context, targetURL string) (str
 	return cleaned, nil
 }
 
+// FirecrawlScraper proxies target URLs via Firecrawl v2 API.
+type FirecrawlScraper struct {
+	client  *http.Client
+	apiKey  string
+	baseURL string
+}
+
+type firecrawlRequest struct {
+	URL     string   `json:"url"`
+	Formats []string `json:"formats"`
+}
+
+type firecrawlResponse struct {
+	Success bool `json:"success"`
+	Data    struct {
+		Markdown string `json:"markdown"`
+	} `json:"data"`
+	Error string `json:"error,omitempty"`
+}
+
+func (s *FirecrawlScraper) FetchContent(ctx context.Context, targetURL string) (string, error) {
+	reqBody, err := json.Marshal(firecrawlRequest{
+		URL:     targetURL,
+		Formats: []string{"markdown"},
+	})
+	if err != nil {
+		return "", fmt.Errorf("marshaling firecrawl request: %w", err)
+	}
+
+	apiURL := s.baseURL
+	if apiURL == "" {
+		apiURL = "https://api.firecrawl.dev/v2/scrape"
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, apiURL, bytes.NewReader(reqBody))
+	if err != nil {
+		return "", fmt.Errorf("creating firecrawl request: %w", err)
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	if s.apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+s.apiKey)
+	}
+
+	client := s.client
+	if client == nil {
+		client = &http.Client{Timeout: 15 * time.Second}
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("requesting firecrawl: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		return "", fmt.Errorf("firecrawl returned status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+
+	var fcResp firecrawlResponse
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 500000)).Decode(&fcResp); err != nil {
+		return "", fmt.Errorf("decoding firecrawl response: %w", err)
+	}
+
+	if !fcResp.Success {
+		return "", fmt.Errorf("firecrawl scrape unsuccessful: %s", fcResp.Error)
+	}
+
+	content := strings.TrimSpace(fcResp.Data.Markdown)
+	if len(content) > 3000 {
+		content = content[:3000]
+	}
+
+	return content, nil
+}
+
 // NewScraper returns a configured Scraper implementation based on config.
 func NewScraper(cfg *config.Config) Scraper {
 	provider := strings.ToLower(strings.TrimSpace(cfg.Enrichment.Scraper))
 	client := &http.Client{
-		Timeout: 5 * time.Second,
+		Timeout: 15 * time.Second,
 	}
 
 	switch provider {
+	case "firecrawl":
+		return &FirecrawlScraper{
+			client: client,
+			apiKey: cfg.Enrichment.FirecrawlAPIKey,
+		}
 	case "jina":
 		return &JinaScraper{
 			client: client,
@@ -124,4 +208,5 @@ func NewScraper(cfg *config.Config) Scraper {
 		return &NoneScraper{}
 	}
 }
+
 
