@@ -4,142 +4,143 @@
 [![Go Version](https://img.shields.io/badge/Go-1.25+-00ADD8?logo=go&logoColor=white)](https://go.dev/)
 [![License](https://img.shields.io/github/license/rafifmsn/celerum)](LICENSE)
 
-A self-hosted, deterministic news intelligence engine written in Go.
-Celerum collects high-volume RSS feeds with near-zero bandwidth using RFC 7232 HTTP conditional polling (`304 Not Modified`).
-Instead of relying on costly vector embeddings, Celerum uses in-memory token shingling, inverted index pruning, Jaccard similarity, and Disjoint-Set Union (Union-Find) clustering.
-Top-scoring breaking event clusters are optionally enriched and summarized via an LLM, then dispatched to Telegram or generic HTTP webhooks.
+A self-hosted, deterministic news intelligence engine written in Go with an embedded real-time web dashboard.
+Celerum collects high-volume RSS and Atom feeds with Chrome TLS fingerprinting (`utls`) and RFC 7232 HTTP conditional polling (`304 Not Modified`).
+Instead of relying on costly vector embeddings, Celerum uses token shingling, inverted index candidate pruning, local BM25/TF-IDF cosine similarity, bounded agglomerative merging, and Disjoint-Set Union (Union-Find) clustering.
+Top-scoring breaking event clusters are optionally enriched and summarized via an LLM, served over a REST and SSE dashboard, and dispatched to Telegram or HTTP webhooks.
 
 ![Celerum Thumbnail](./celerum-thumb.jpg)
 
 ## Key Features
 
-- **RFC 7232 Conditional Ingestion:**
-  Tracks `ETag` and `Last-Modified` headers in an embedded SQLite database.
-  Unmodified feeds return `304 Not Modified` with empty bodies, completing in sub-50ms.
+- **RFC 7232 Conditional Ingestion & Adaptive Scheduling:**
+  Tracks `ETag`, `Last-Modified`, `Retry-After`, and `Cache-Control: max-age` headers in embedded SQLite (`sources`).
+  TLS handshakes mimic a modern Chrome ClientHello via `utls`, and unmodified `304 Not Modified` feeds back off exponentially up to 30 minutes (`1.5^consecutive_304`) with randomized jitter.
 
 - **Algorithmic Clustering (Zero Embedding Costs):**
-  Normalizes text, strips stop-words, and hashes 64-bit shingles using FNV-1a.
-  Inverted index pruning bypasses over 80 percent of pairwise comparisons.
-  Linear two-pointer scans calculate Jaccard similarity with zero heap allocations, merging related coverage via Union-Find.
+  Cleans HTML and URLs, strips stop-words, applies lightweight stemming, and builds 64-bit FNV-1a unigram/bigram shingles alongside BM25/TF-IDF vectors weighted 2x toward headlines.
+  An inverted shingle index prunes candidate pairs sharing fewer than 2 shingles before computing normalized cosine similarity with centroid and complete-linkage guards to prevent mega-cluster chaining.
 
-- **Multi-Source Velocity Scoring:**
-  Heuristic scoring prioritizes breaking developments based on cluster density, publisher tiers, and market keywords with time decay penalties.
+- **Inverted Tier Velocity Scoring & Exponential Decay:**
+  Heuristic scoring rewards unique source corroboration (`3.0`), inverted publisher tiers (`Tier 1 = 4.5`, `Tier 2 = 3.0`, `Tier 3+ = 1.5`), and word-boundary keyword boosts (`2.0`) scaled by an exponential half-life time decay (`HalfLifeHours = 2.0`).
 
-- **Hybrid Alert Cadence:**
-  High-velocity breaking events alert immediately.
-  On quiet market cycles, an hourly heartbeat flushes the top-K accumulated stories, guaranteeing consistent signal without duplicate notifications.
+- **Hybrid Alert Cadence & Persistent Delivery:**
+  Clusters crossing `breaking_threshold` alert immediately while lower-scoring top-K clusters buffer for the periodic flush interval (`flush_interval`).
+  Delivered SHA-256 cluster fingerprints persist in `dispatched_clusters`, and failed webhook or Telegram deliveries queue in `webhook_retries` for automatic background retry with exponential backoff.
 
-- **Resilient AI Pipeline with Automatic Fallback:**
-  Supports OpenRouter, DeepSeek, Groq, OpenAI, and Ollama through OpenAI-compatible `/chat/completions`.
-  If external AI providers experience outages or rate limits, Celerum automatically falls back to raw RSS descriptions (`enriched: false`).
-  Breaking news is never delayed or dropped.
+- **Resilient AI Synthesis & Enrichment:**
+  Supports OpenRouter, DeepSeek, OpenAI, Groq, and Ollama through OpenAI-compatible `/chat/completions` endpoints, paired with `none`, `direct`, `jina`, or `firecrawl` article scrapers.
+  Strict config validation catches missing API keys early, while runtime provider timeouts fall back cleanly to raw RSS links (`enriched: false`) so breaking alerts are never dropped.
 
-- **Zero-CGO Embedded Storage:**
-  Built with `modernc.org/sqlite` for cross-compilation without CGO or GCC toolchains.
-  Tracks caching cursors, deduplicates dispatched clusters, and queues webhook retries with automatic daily TTL pruning.
+- **Zero-CGO Embedded Dashboard & Storage:**
+  Single Go binary with `modernc.org/sqlite` storage (dual 7-day time TTL plus per-feed and global row caps) and a React SPA compiled into `web/dist` via `go:embed`.
+  Runtime settings, feed sources, live SSE telemetry (`/api/events`), and 6-stage pipeline diagnostics (`doctor`) are manageable directly from the browser.
+
+## Web Dashboard
+
+Running `celerum run` starts both the background pipeline and an embedded web UI (`http://localhost:8080` by default) backed by SQLite, REST endpoints, and live SSE telemetry.
+
+![Celerum Overview Dashboard](./docs/screens/overview.png)
+
+The dashboard includes views for Overview telemetry and AI synthesis briefings, Intelligence cluster inspection, paginated Raw Feed browsing, Sources health and YAML import/export, Dispatch queues and history, and live Settings with inline System Doctor checks (additional captures are stored under [docs/screens/](docs/screens/)).
 
 ## Architecture Overview
 
 ```mermaid
 flowchart LR
-    A["RSS Feeds\n(RFC 7232 / 304)"] --> B["In-Memory Clustering\n(Shingles + Jaccard)"]
-    B --> C["Velocity Scoring\n(Tiers + Keywords)"]
-    C --> D["LLM Synthesis\n(with Fallback)"]
-    D --> E["Dispatch\n(Telegram / Webhooks)"]
+    A["RSS & Atom Feeds\n(uTLS + RFC 7232)"] --> B["Cluster Engine\n(Shingles + BM25 Cosine)"]
+    B --> C["Velocity Scorer\n(Inverted Tiers + Decay)"]
+    C --> D["Enrichment & LLM\n(Scrapers + Fallback)"]
+    D --> E["Hybrid Dispatch\n(Telegram / Webhooks)"]
+    B --> F["Embedded Web UI\n(SQLite + REST / SSE)"]
+    C --> F
+    E --> F
 ```
 
 **How it works:**
 
-1. **RFC 7232 Conditional Ingestion (Every 5m + Jitter):**
-   Celerum polls all configured RSS and Atom feeds concurrently using cached `ETag` and `Last-Modified` headers stored in SQLite.
-   Unchanged feeds respond with `304 Not Modified` and zero body payload, finishing in sub-50ms with zero wasted bandwidth.
-   A randomized jitter of up to 10 percent prevents publisher traffic spikes, while per-feed ring buffers (default 20 items) prevent high-frequency publishers from starving slower, high-signal feeds.
+1. **uTLS Conditional Ingestion & Adaptive Polling:**
+   Enabled feeds from SQLite `sources` are polled concurrently using cached `ETag` and `Last-Modified` cursors.
+   When a feed returns `304 Not Modified`, Celerum honors `Retry-After` / `Cache-Control` hints or backs off by `1.5^consecutive_304` (capped at 30 minutes) with 10 percent jitter, resetting immediately when new articles arrive.
+   Blocklisted URLs and empty titles are dropped while keeping up to `max_articles_per_feed` items per feed cycle, including short breaking headlines in raw storage.
 
-2. **In-Memory Token Shingling & Index Pruning:**
-   New articles are stripped of HTML tags, normalized to lowercase, and cleared of stop-words.
-   Tokens are hashed into 64-bit FNV-1a shingles and stored in sorted slices.
-   An in-memory inverted index maps shingle hashes to document IDs, bypassing over 80 percent of pairwise comparisons by immediately skipping document pairs with insufficient shingle overlap.
+2. **Shingle Pruning & Bounded TF-IDF Clustering:**
+   Articles with at least 4 non-stopword tokens enter an in-memory clustering window where title and description tokens are stemmed and hashed into sorted 64-bit FNV-1a shingles.
+   An inverted shingle index skips pairs with fewer than 2 shared shingles before scoring candidate pairs using L2-normalized BM25/TF-IDF vectors (title terms weighted 2x) and merging strongest pairs with Union-Find, a centroid guard (`0.85 * threshold`), and a complete-linkage floor (`0.60 * threshold`).
 
-3. **Allocation-Free Jaccard & Union-Find Clustering:**
-   Candidate pairs are evaluated using a linear two-pointer scan across sorted `[]uint64` shingle slices to calculate Jaccard similarity without heap allocations.
-   Pairs exceeding the similarity threshold ($\tau \ge 0.28$) are merged via Disjoint-Set Union (Union-Find) with path compression, collapsing multi-source coverage into cohesive event clusters.
+3. **Inverted Tier Velocity Scoring:**
+   Clusters are scored across unique sources rather than duplicate feed items, giving Tier 1 wires higher authority than Tier 2 or Tier 3+ feeds and applying word-boundary keyword matching and a 2-hour half-life exponential decay.
 
-4. **Multi-Factor Velocity Scoring:**
-   Clusters are scored dynamically based on cluster size $|C_k|$ (multi-source verification), publisher tier weights, and market keyword boosts, balanced against a linear time decay penalty.
+4. **Hybrid Alert Cadence & Persistent Deduplication:**
+   Clusters meeting `breaking_threshold` are dispatched immediately, while remaining top-K clusters are held as buffered candidates until the `flush_interval` timer fires or an operator triggers a manual flush.
+   Every dispatched cluster writes its SHA-256 URL-set fingerprint to `dispatched_clusters` in SQLite to prevent duplicate alerts across restarts.
 
-5. **Hybrid Alert Cadence:**
-   - **Immediate Breaking Alert:** Clusters exceeding the velocity threshold ($S(C_k) \ge \tau_{\text{break}}$) trigger immediate dispatch. A deterministic SHA-256 fingerprint is recorded in SQLite to eliminate duplicate notifications.
-   - **Periodic Heartbeat Digest:** Clusters below the threshold remain in the 3-hour sliding window. When the 1-hour flush ticker fires, Celerum dispatches the top-K undispatched clusters as a periodic digest.
+5. **Constrained Enrichment, Fallback & Retry Queue:**
+   When LLM synthesis is enabled, Celerum optionally scrapes up to 3 articles per cluster concurrently (15-second timeout) using `direct`, `jina`, or `firecrawl`, then invokes `/chat/completions` (30-second timeout).
+   If scraping or summarization fails, alerts still ship with RSS metadata (`enriched: false`), and failed webhook or Telegram HTTP deliveries persist in `webhook_retries` for background retry (or manual retry from the UI).
 
-6. **Resilient Synthesis & Delivery:**
-   Qualified clusters trigger high-density executive briefings through OpenAI-compatible LLM endpoints with preserved metrics, figures, and direct formatting.
-   When scraping is enabled, Celerum concurrently scrapes up to 3 articles per cluster to feed multi-source context into the LLM.
-   If AI providers time out or fail, Celerum automatically falls back to verified source links (`enriched: false`), allowing downstream platforms like Telegram to natively unfurl rich link previews.
-   Failed webhook dispatches are queued in SQLite, where a background worker retries them every 1 minute with exponential backoff up to 5 attempts.
-
-For the comprehensive technical specification and mathematical formulas, see [docs/architecture.md](docs/architecture.md).
-For operational boundaries, direct scraper caveats, and paywall considerations, see [docs/limitations.md](docs/limitations.md).
+For the full mathematical formulation, database schema, and API overview, see [docs/architecture.md](docs/architecture.md).
+For scraper trade-offs, config precedence, and operational limits, see [docs/limitations.md](docs/limitations.md).
 
 ## Quickstart
 
-1. **Build the binary:**
+1. **Build the frontend and Go binary:**
 
    ```bash
+   npm --prefix web install && npm --prefix web run build
    go build -o celerum ./cmd/celerum
    ```
 
-2. **Initialize configuration:**
+   If `web/dist` is already built and committed or up to date, `go build -o celerum ./cmd/celerum` embeds it directly.
+
+2. **Initialize configuration and environment (optional):**
 
    ```bash
    ./celerum init
-   ```
-
-   This generates a starter `celerum.yaml` configuration template with overwrite protection.
-
-3. **Configure credentials:**
-
-   ```bash
    cp .env.example .env
    ```
 
-   Fill in your tokens in `.env`.
-   Celerum automatically loads `.env` on startup without requiring manual `export` commands.
+   Celerum automatically loads `.env` from the config directory on startup.
+   You can also skip `celerum.yaml` entirely for a zero-config first boot and configure feeds, keys, and targets directly in the web dashboard, because SQLite becomes the runtime source of truth once seeded.
 
-4. **Verify Telegram connection:**
-
-   ```bash
-   ./celerum test telegram
-   ```
-
-5. **Dry-run check (zero external cost):**
+3. **Run non-destructive pipeline diagnostics:**
 
    ```bash
-   ./celerum check
+   ./celerum doctor -c celerum.yaml
    ```
 
-   Inspects live feed clustering and scores on stdout without dispatching webhooks or making LLM calls.
+   `doctor` runs a 6-stage verification (config validation, SQLite WAL storage, feed reachability, article scraper, LLM `/chat/completions`, and dispatch targets).
+   Pass `--send` to deliver a synthetic test alert through configured dispatchers, or use `./celerum test telegram` for Telegram-only verification.
 
-6. **Execute single pass or start continuous daemon:**  
-   Run a single cycle (forces an immediate top-K flush and exits with code 0, ideal for cron jobs or CI):
+4. **Dry-run clustering check (zero external cost):**
+
    ```bash
-   ./celerum run --once
+   ./celerum check -c celerum.yaml
    ```
-   Or start the continuous 24/7 background worker (coordinates the 5-minute poll ticker with jitter, 1-minute retry loop, and 1-hour heartbeat flush):
+
+   Polls active feeds once and prints formed clusters and velocity scores to stdout without dispatching alerts or calling an LLM.
+
+5. **Start the engine and web dashboard:**
+
    ```bash
-   ./celerum run
+   ./celerum run -c celerum.yaml -addr :8080
    ```
+
+   Open `http://localhost:8080` in your browser to monitor live telemetry, inspect raw articles and clusters, manage sources, or hot-reload settings without restarting.
+   Pass `-c` only when you want to bootstrap or overwrite SQLite configuration from YAML, because bare `./celerum run` resumes directly from the SQLite database.
 
 ## Production Deployment
 
-For continuous 24/7 background operation on a server or VPS, run Celerum as a container managed by Docker Compose.
-The service restarts automatically across host reboots or unexpected exits via `restart: unless-stopped`.
+For 24/7 operation on a server or VPS, run Celerum via Docker Compose with persistent `./data` volume storage.
 
-1. **Configure environment and feeds:**
+1. **Prepare environment and optional seed config:**
 
    ```bash
    cp .env.example .env
    cp celerum.yaml.example celerum.yaml
    ```
+
+   Expose port `8080` (or reverse-proxy port `8080` behind Nginx or Caddy) if you want remote access to the web dashboard.
 
 2. **Start the container stack:**
 
@@ -147,20 +148,16 @@ The service restarts automatically across host reboots or unexpected exits via `
    docker compose up -d
    ```
 
-3. **Inspect live logs:**
+3. **Inspect logs or stop the service:**
 
    ```bash
    docker compose logs -f celerum
-   ```
-
-4. **Stop the service:**
-   ```bash
    docker compose down
    ```
 
-The database and cached cursors are persisted in `./data` on the host across container upgrades.
-
 ## Configuration Reference
+
+Celerum uses `celerum.yaml` as an initial bootstrap seed (and for UI YAML import/export).
 
 ```yaml
 version: "1"
@@ -175,15 +172,19 @@ engine:
   max_articles_per_feed: 20
   similarity_threshold: 0.28
   breaking_threshold: 12.0
-  top_k: 2
+  top_k: 5
 
 feeds:
   - name: "CoinDesk"
     url: "https://www.coindesk.com/arc/outboundfeeds/rss/"
+    category: "Crypto"
     tier: 1
+    enabled: true
   - name: "Cointelegraph"
     url: "https://cointelegraph.com/rss"
+    category: "Crypto"
     tier: 2
+    enabled: true
 
 keywords:
   boost:
@@ -207,7 +208,7 @@ llm:
   base_url: "" # optional, defaults to provider endpoint
   model: "meta-llama/llama-3.1-8b-instruct"
   api_key: "${LLM_API_KEY}"
-  language: "en" # target language for summary (e.g. en, id, es, pt-BR)
+  language: "en"
   system_prompt: "" # optional custom prompt with {{language}} placeholder
 
 dispatch:
@@ -266,20 +267,20 @@ Balancing freshness against multi-source corroboration depends on the velocity o
 Below is an architectural breakdown of buffer dynamics and recommended tuning profiles.
 Please note that this case study is provided for architectural reference and educational modeling only.
 
-### Buffer Dynamics & In-Memory Decay
+### Buffer Dynamics & Exponential Decay
 
 When a high-volume publisher like Bloomberg produces 18 articles in a 5-minute cycle:
 
 1. **Ring Buffer Quota:**
    All 18 articles fit within the feed buffer (`max_articles_per_feed: 20`).
 2. **Active Window Accumulation:**
-   The articles enter the in-memory window (`window_duration: 3h`).
+   The articles enter the active window (`window_duration: 3h`, or longer windows like `24h` via settings) stored across SQLite and memory.
 3. **Cluster Formation & Multi-Source Lag:**
-   If none of those 18 articles cross `breaking_threshold: 12.0` (because they are single-source stories without enough cross-publisher corroboration yet), they sit in memory waiting for corroboration.
-   If Reuters or CoinDesk publishes a matching story 15 minutes later, it merges into Bloomberg's cluster, bumping the score and potentially triggering an immediate breaking alert.
-4. **Time Decay Penalty:**
-   The longer an article sits without corroboration, the more its velocity score decays relative to evaluation time (see the scoring formulation in [docs/architecture.md](docs/architecture.md)).
-   At the 50-minute mark, unverified stories have decayed significantly, naturally ranking below fresh stories published 5 minutes ago.
+   If none of those 18 articles cross `breaking_threshold: 12.0` (because they are single-source stories without enough cross-publisher corroboration yet), they wait in the window for corroboration.
+   If Reuters or CoinDesk publishes a matching story 15 minutes later, bounded BM25/TF-IDF cosine clustering merges it into Bloomberg's cluster, bumping the score and potentially triggering an immediate breaking alert.
+4. **Exponential Time Decay:**
+   The longer a cluster sits without fresh updates, the more its velocity score decays multiplicatively via $0.5^{\Delta t / 2.0}$ (see [docs/architecture.md](docs/architecture.md)).
+   After 2 hours without corroboration, an unverified story drops to 50 percent of its base score, naturally yielding to fresh events.
 
 ### Fast-Paced Market Feeds
 
@@ -288,25 +289,27 @@ A tighter configuration profile prioritizes immediacy:
 
 ```yaml
 engine:
-  poll_interval: "2m" # Poll feeds every 2 minutes with randomized jitter
+  poll_interval: "2m" # Poll feeds every 2 minutes with adaptive 304 backoff
   window_duration: "1h" # Expire uncorroborated stories after 60 minutes
   flush_interval: "15m" # Flush top-K digest every 15 minutes instead of 1 hour
-  breaking_threshold: 9.0 # Lower threshold so multi-source Tier-1 stories alert instantly
+  breaking_threshold: 14.0 # Multi-source Tier-1 alerts alert immediately
   top_k: 3 # Keep periodic digest payloads short and focused
 ```
 
 - 15-Minute Digest Cadence ensures monitoring desks receive timely market digests without waiting an hour during quiet cycles.
-- Tighter 1-Hour Window ensures stale single-source noise exits memory promptly after 60 minutes.
-- A breaking Tier-1 wire reported by two outlets (e.g. Bloomberg and Reuters) scores roughly $2 \times 3.0 + 2 \times 2.0 = 10.0$, immediately crossing the 9.0 threshold and delivering within 120 seconds rather than waiting for any flush timer.
+- Tighter 1-Hour Window ensures stale single-source noise exits the active cluster evaluation promptly after 60 minutes.
+- A breaking Tier-1 wire reported by two distinct Tier-1 outlets scores $(2 \times 3.0) + (2 \times 4.5) = 15.0$ before keyword boosts, immediately crossing `14.0` and delivering as soon as polled rather than waiting for any flush timer.
 
 ## Limitations & Edge Cases
 
+- **Strict Scraper & LLM Key Validation:**
+  Selecting `jina`, `firecrawl`, or non-`ollama` LLM providers enforces non-empty API keys at config save and `doctor` verification rather than failing silently.
+
 - **Direct Scraper (`scraper: direct`):**
-  Performs basic HTTP GET requests and HTML tag stripping without rate-limiting, IP rotation, or anti-bot challenge solving.
+  Performs basic HTTP GET requests and HTML tag stripping without domain-level rate-limiting, IP rotation, or JavaScript hydration.
   Target publishers fronted by strict WAFs or Cloudflare may return HTTP 403 or 429 status codes.
 
-- **Paywalls & Protected Feeds:**
-  Paywalled sites may yield subscription prompts that get ingested into the LLM context.
-  Using `scraper: none` avoids external web scraping entirely, relying cleanly on RSS title and description payloads.
+- **YAML Bootstrap vs SQLite Runtime State:**
+  Once seeded in SQLite, UI source/setting edits modify SQLite directly while `celerum.yaml` on disk remains unchanged unless exported via `/api/config/yaml`.
 
 For detailed edge cases and recommended mitigations, refer to [docs/limitations.md](docs/limitations.md).

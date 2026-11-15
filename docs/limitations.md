@@ -1,32 +1,43 @@
 # System Limitations & Edge Cases
 
-This document outlines known operational boundaries, scraper constraints, and edge cases across the Celerum pipeline.
+This document outlines known operational boundaries, scraper constraints, and configuration semantics across Celerum.
 
-## 1. Direct Scraper Limitations
+## 1. Enrichment Scraper Trade-Offs (`internal/enrich`)
 
-The built-in direct scraper (`scraper: "direct"`) performs raw HTTP GET requests followed by basic HTML tag stripping.
-It is intended as a lightweight zero-dependency extraction fallback, not a full-featured headless crawler.
+Celerum supports four `enrichment.scraper` modes: `none`, `direct`, `jina`, and `firecrawl`.
 
-- **No Request Throttling or IP Rotation:**
-  The direct scraper does not implement domain-level rate limiting, adaptive backoff, or rotating proxies.
-  If multiple articles in an active cluster originate from the same domain, concurrent requests can trigger HTTP 429 Too Many Requests or transient IP blocks.
-  Users deploying Celerum against rate-sensitive publishers should ensure external proxying or rely on managed scraper backends.
+- **Direct Scraper (`scraper: "direct"`):**
+  Performs raw HTTP GET requests followed by HTML tag stripping and truncation to 2000 characters.
+  It performs no domain-level rate limiting, IP rotation, or headless JavaScript execution.
+  Publishers behind Cloudflare Bot Management, Akamai, Datadome, or client-side React/Next.js hydration may return HTTP 403/429 errors or empty skeleton markup.
+- **Managed Scrapers (`jina` and `firecrawl`):**
+  Using `jina` (`r.jina.ai`) or `firecrawl` (`https://api.firecrawl.dev/v2/scrape`, truncated to 3000 characters) delegates JS rendering and markdown extraction externally, at the cost of third-party API latency and token/credit quotas.
+- **Strict API Key Validation:**
+  Selecting `jina` requires a non-empty `enrichment.jina_api_key`, and selecting `firecrawl` requires a non-empty `enrichment.firecrawl_api_key`.
+  Likewise, enabling `llm` with any non-`ollama` provider rejects empty `llm.api_key` values during config validation, `PUT /api/settings`, and `doctor` diagnostics rather than deferring failure until alert time.
+  When external scrapers fail during live dispatch despite valid keys, Celerum falls back gracefully to RSS descriptions and dispatches with `enriched: false` if LLM synthesis fails.
 
-- **No Anti-Bot or CAPTCHA Bypass:**
-  Publishers fronted by Cloudflare Bot Management, Datadome, Akamai, or custom WAFs will reject direct scraping requests with HTTP 403 Forbidden or challenge roadblocks.
-  Celerum does not solve browser challenges or execute JavaScript.
-
-- **JavaScript-Rendered Single-Page Applications (SPAs):**
-  Direct scraping only reads the initial static HTML response.
-  Publishers relying entirely on client-side React, Next.js, Vue, or Angular hydration for article text will return empty content or placeholder loading skeletons.
-
-## 2. Paywalled and Protected Content Ingestion
+## 2. Paywalled Content & Protected Feeds
 
 - **Paywall Boilerplate Pollution:**
-  When targeting paywalled publications, direct requests frequently return subscription prompts, login walls, or partial teaser snippets.
-  Because the scraper extracts all readable text from the response, paywall notices may be passed into the LLM synthesis prompt.
-  While the system prompt instructs the model to ignore boilerplate, heavily obfuscated or dominant paywall text can degrade summary quality.
+  Scrapers hitting subscription gates ingest teaser notices or login prompts alongside headlines.
+  Setting `enrichment.scraper: "none"` avoids full-page extraction entirely and limits LLM input cleanly to publisher-supplied RSS titles and descriptions.
+- **Challenge-Gated RSS / Atom Feeds:**
+  Although Celerum negotiates Chrome-aligned TLS fingerprints via `utls` (`HelloChrome_Auto`) with conditional `ETag`/`Last-Modified` and `Retry-After` handling, feeds protected by interactive JavaScript Turnstile/Under-Attack interstitials cannot be parsed without an external proxy or RSS bridge.
 
-- **Protected RSS and Atom Feeds:**
-  Although rare, some publishers place their syndication feeds behind Cloudflare Under Attack mode, geo-blocking, or strict HTTP headers.
-  Such feeds may fail conditional polling unless whitelisted or accessed through intermediate network tunnels.
+## 3. SQLite Single Source of Truth vs YAML Drift
+
+- **Bootstrap Semantics:**
+  Starting `celerum run` with `-c celerum.yaml` seeds or refreshes SQLite (`sources` and `settings`) via `BootstrapConfig` / `ImportConfig`.
+  Starting `celerum run` without `-c` resumes exclusively from the existing SQLite database (default `data/celerum.db`).
+- **UI Edits Do Not Rewrite Local YAML Automatically:**
+  Changes made through `/api/settings`, `/api/sources`, or the web Settings and Sources pages update SQLite immediately and hot-reload the running engine.
+  The `celerum.yaml` file on disk is not automatically rewritten, so keeping `-c celerum.yaml` on future restarts can overwrite UI changes unless you export an updated YAML from `GET /api/config/yaml` (or the Sources page Export YAML action).
+
+## 4. Storage & Single-Node Scope
+
+- **Single-Instance Embedded SQLite:**
+  Celerum targets single-binary / single-container deployments backed by SQLite in WAL mode with dual retention pruning (7 days TTL, max 500 articles per feed, max 10000 articles total).
+  Multi-replica horizontal scaling sharing one database file over network filesystems (such as NFS) is not supported.
+- **Short Headlines in Raw Feed vs Clustering:**
+  `FilterAndCap` retains short breaking headlines in SQLite so operators see them in Raw Feed, while `FilterClusterableArticles` excludes entries with fewer than 4 non-stopword tokens from algorithmic clustering to prevent spurious merges unless all active articles fall below the threshold.
