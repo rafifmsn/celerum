@@ -205,6 +205,7 @@ func New(dbPath string) (*Store, error) {
 	);
 
 	CREATE INDEX IF NOT EXISTS idx_clusters_status_updated ON clusters(status, updated_at DESC);
+	CREATE INDEX IF NOT EXISTS idx_clusters_status_dispatched ON clusters(status, dispatched_at DESC, updated_at DESC);
 	`
 	if _, err := db.Exec(schema); err != nil {
 		_ = db.Close()
@@ -530,7 +531,138 @@ func (s *Store) LoadRuntimeSettings() (*RuntimeSettings, error) {
 	if err := json.Unmarshal([]byte(raw), &rt); err != nil {
 		return nil, fmt.Errorf("decoding runtime settings: %w", err)
 	}
+	mergeLegacyRuntimeSettings(raw, &rt)
 	return &rt, nil
+}
+
+// mergeLegacyRuntimeSettings preserves values stored prior to explicit json struct tags.
+func mergeLegacyRuntimeSettings(raw string, rt *RuntimeSettings) {
+	type legacyEngine struct {
+		PollInterval        string  `json:"PollInterval"`
+		WindowDuration      string  `json:"WindowDuration"`
+		FlushInterval       string  `json:"FlushInterval"`
+		MaxArticlesPerFeed  int     `json:"MaxArticlesPerFeed"`
+		SimilarityThreshold float64 `json:"SimilarityThreshold"`
+		BreakingThreshold   float64 `json:"BreakingThreshold"`
+		TopK                int     `json:"TopK"`
+	}
+	type legacyKeywords struct {
+		Boost     []string `json:"Boost"`
+		Blocklist []string `json:"Blocklist"`
+	}
+	type legacyEnrichment struct {
+		Scraper         string `json:"Scraper"`
+		JinaAPIKey      string `json:"JinaAPIKey"`
+		FirecrawlAPIKey string `json:"FirecrawlAPIKey"`
+	}
+	type legacyLLM struct {
+		Enabled      bool   `json:"Enabled"`
+		Provider     string `json:"Provider"`
+		BaseURL      string `json:"BaseURL"`
+		Model        string `json:"Model"`
+		APIKey       string `json:"APIKey"`
+		Language     string `json:"Language"`
+		SystemPrompt string `json:"SystemPrompt"`
+	}
+	type legacyTelegram struct {
+		Enabled  bool   `json:"Enabled"`
+		BotToken string `json:"BotToken"`
+		ChatID   string `json:"ChatID"`
+	}
+	type legacyWebhook struct {
+		Enabled bool              `json:"Enabled"`
+		URL     string            `json:"URL"`
+		Headers map[string]string `json:"Headers"`
+	}
+	type legacyDispatch struct {
+		Telegram legacyTelegram `json:"Telegram"`
+		Webhook  legacyWebhook  `json:"Webhook"`
+	}
+	var leg struct {
+		Engine     legacyEngine     `json:"engine"`
+		Keywords   legacyKeywords   `json:"keywords"`
+		Enrichment legacyEnrichment `json:"enrichment"`
+		LLM        legacyLLM        `json:"llm"`
+		Dispatch   legacyDispatch   `json:"dispatch"`
+	}
+	if err := json.Unmarshal([]byte(raw), &leg); err != nil {
+		return
+	}
+	if rt.Engine.PollInterval == "" {
+		rt.Engine.PollInterval = leg.Engine.PollInterval
+	}
+	if rt.Engine.WindowDuration == "" {
+		rt.Engine.WindowDuration = leg.Engine.WindowDuration
+	}
+	if rt.Engine.FlushInterval == "" {
+		rt.Engine.FlushInterval = leg.Engine.FlushInterval
+	}
+	if rt.Engine.MaxArticlesPerFeed == 0 {
+		rt.Engine.MaxArticlesPerFeed = leg.Engine.MaxArticlesPerFeed
+	}
+	if rt.Engine.SimilarityThreshold == 0 {
+		rt.Engine.SimilarityThreshold = leg.Engine.SimilarityThreshold
+	}
+	if rt.Engine.BreakingThreshold == 0 {
+		rt.Engine.BreakingThreshold = leg.Engine.BreakingThreshold
+	}
+	if rt.Engine.TopK == 0 {
+		rt.Engine.TopK = leg.Engine.TopK
+	}
+	if len(rt.Keywords.Boost) == 0 && len(leg.Keywords.Boost) > 0 {
+		rt.Keywords.Boost = leg.Keywords.Boost
+	}
+	if len(rt.Keywords.Blocklist) == 0 && len(leg.Keywords.Blocklist) > 0 {
+		rt.Keywords.Blocklist = leg.Keywords.Blocklist
+	}
+	if rt.Enrichment.Scraper == "" {
+		rt.Enrichment.Scraper = leg.Enrichment.Scraper
+	}
+	if rt.Enrichment.JinaAPIKey == "" {
+		rt.Enrichment.JinaAPIKey = leg.Enrichment.JinaAPIKey
+	}
+	if rt.Enrichment.FirecrawlAPIKey == "" {
+		rt.Enrichment.FirecrawlAPIKey = leg.Enrichment.FirecrawlAPIKey
+	}
+	if !rt.LLM.Enabled && leg.LLM.Enabled {
+		rt.LLM.Enabled = leg.LLM.Enabled
+	}
+	if rt.LLM.Provider == "" {
+		rt.LLM.Provider = leg.LLM.Provider
+	}
+	if rt.LLM.BaseURL == "" {
+		rt.LLM.BaseURL = leg.LLM.BaseURL
+	}
+	if rt.LLM.Model == "" {
+		rt.LLM.Model = leg.LLM.Model
+	}
+	if rt.LLM.APIKey == "" {
+		rt.LLM.APIKey = leg.LLM.APIKey
+	}
+	if rt.LLM.Language == "" {
+		rt.LLM.Language = leg.LLM.Language
+	}
+	if rt.LLM.SystemPrompt == "" {
+		rt.LLM.SystemPrompt = leg.LLM.SystemPrompt
+	}
+	if !rt.Dispatch.Telegram.Enabled && leg.Dispatch.Telegram.Enabled {
+		rt.Dispatch.Telegram.Enabled = leg.Dispatch.Telegram.Enabled
+	}
+	if rt.Dispatch.Telegram.BotToken == "" {
+		rt.Dispatch.Telegram.BotToken = leg.Dispatch.Telegram.BotToken
+	}
+	if rt.Dispatch.Telegram.ChatID == "" {
+		rt.Dispatch.Telegram.ChatID = leg.Dispatch.Telegram.ChatID
+	}
+	if !rt.Dispatch.Webhook.Enabled && leg.Dispatch.Webhook.Enabled {
+		rt.Dispatch.Webhook.Enabled = leg.Dispatch.Webhook.Enabled
+	}
+	if rt.Dispatch.Webhook.URL == "" {
+		rt.Dispatch.Webhook.URL = leg.Dispatch.Webhook.URL
+	}
+	if len(rt.Dispatch.Webhook.Headers) == 0 && len(leg.Dispatch.Webhook.Headers) > 0 {
+		rt.Dispatch.Webhook.Headers = leg.Dispatch.Webhook.Headers
+	}
 }
 
 // BootstrapConfig seeds SQLite from yamlCfg if sources & settings are empty, then loads the SQLite runtime Config.
@@ -993,7 +1125,54 @@ func (s *Store) QueryClusters(statusFilter, tierFilter, search string, since tim
 		return nil, fmt.Errorf("querying clusters: %w", err)
 	}
 	defer rows.Close()
+	return scanClusterRows(rows)
+}
 
+// QueryDispatchedClustersPage returns paginated dispatched clusters ordered by most recently dispatched.
+func (s *Store) QueryDispatchedClustersPage(search string, page, limit int) ([]ClusterRecord, int, error) {
+	if page <= 0 {
+		page = 1
+	}
+	if limit <= 0 || limit > 200 {
+		limit = 20
+	}
+
+	where := []string{"status = 'dispatched'"}
+	var args []any
+	if q := strings.TrimSpace(search); q != "" {
+		like := "%" + strings.ToLower(q) + "%"
+		where = append(where, "(LOWER(title) LIKE ? OR LOWER(summary) LIKE ? OR LOWER(lead_source) LIKE ? OR LOWER(sources_json) LIKE ?)")
+		args = append(args, like, like, like, like)
+	}
+	whereSQL := " WHERE " + strings.Join(where, " AND ")
+
+	var total int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM clusters`+whereSQL+`;`, args...).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("counting dispatched clusters: %w", err)
+	}
+
+	offset := (page - 1) * limit
+	queryArgs := append(append([]any{}, args...), limit, offset)
+	rows, err := s.db.Query(`
+		SELECT cluster_hash, representative_id, title, summary, enriched, score, tier,
+		       source_count, category, lead_source, sources_json, status, dispatch_mode,
+		       dispatch_targets, scraper_used, created_at, updated_at, dispatched_at
+		FROM clusters`+whereSQL+`
+		ORDER BY dispatched_at DESC, updated_at DESC
+		LIMIT ? OFFSET ?;`, queryArgs...)
+	if err != nil {
+		return nil, 0, fmt.Errorf("querying dispatched clusters page: %w", err)
+	}
+	defer rows.Close()
+
+	items, err := scanClusterRows(rows)
+	if err != nil {
+		return nil, 0, err
+	}
+	return items, total, nil
+}
+
+func scanClusterRows(rows *sql.Rows) ([]ClusterRecord, error) {
 	var out []ClusterRecord
 	for rows.Next() {
 		var r ClusterRecord

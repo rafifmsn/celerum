@@ -5,9 +5,13 @@ export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs))
 }
 
-export function formatUtcTime(iso?: string): string {
-  if (!iso) return '--:-- UTC'
-  const date = new Date(iso)
+export function formatUtcTime(value?: string): string {
+  if (!value) return '--:-- UTC'
+  const trimmed = value.trim()
+  if (/^\d{2}:\d{2}(\s+UTC)?$/i.test(trimmed)) {
+    return trimmed.toUpperCase().endsWith('UTC') ? trimmed.toUpperCase() : `${trimmed} UTC`
+  }
+  const date = new Date(trimmed)
   if (Number.isNaN(date.getTime())) return '--:-- UTC'
   const hh = String(date.getUTCHours()).padStart(2, '0')
   const mm = String(date.getUTCMinutes()).padStart(2, '0')

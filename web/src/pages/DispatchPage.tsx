@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { AlertTriangle, Clock, RefreshCw, Send, Trash2 } from 'lucide-react'
+import { AlertTriangle, ChevronLeft, ChevronRight, RefreshCw, Send, Trash2 } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
@@ -20,19 +20,26 @@ interface DispatchPageProps {
 export function DispatchPage({ searchQuery, streamTick }: DispatchPageProps) {
   const [data, setData] = useState<DispatchResponse | null>(null)
   const [tab, setTab] = useState<'pending' | 'history'>('pending')
+  const [page, setPage] = useState(1)
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState(false)
   const [notice, setNotice] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null)
   const [countdown, setCountdown] = useState(0)
 
+  const limit = 20
+
   const load = useCallback(async () => {
     try {
-      const res = await fetchDispatch(searchQuery)
+      const res = await fetchDispatch(searchQuery, page, limit)
       setData(res)
       setCountdown(res.next_flush_in_seconds)
     } finally {
       setLoading(false)
     }
+  }, [searchQuery, page])
+
+  useEffect(() => {
+    setPage(1)
   }, [searchQuery])
 
   useEffect(() => {
@@ -92,13 +99,10 @@ export function DispatchPage({ searchQuery, streamTick }: DispatchPageProps) {
     <div className="flex flex-col gap-5">
       <Card className="p-5 flex flex-wrap items-center justify-between gap-4">
         <div className="space-y-1">
-          <div className="flex items-center gap-2 text-[12px] text-[#8B8B96] tabular-nums">
-            <Clock className="w-3.5 h-3.5" />
-            <span>Next Heartbeat Flush in {formatCountdown(countdown)}</span>
-            <span>&middot; Top-{data?.top_k ?? 3} buffer</span>
-            <span>&middot; {data?.active_targets ?? 0} active target(s)</span>
-          </div>
           <h1 className="text-[20px] font-semibold text-white">Dispatch Queue & Retry Dead-Letter</h1>
+          <p className="text-[12px] text-[#8B8B96] tabular-nums">
+            Next Heartbeat Flush in {formatCountdown(countdown)}
+          </p>
         </div>
 
         <div className="flex flex-wrap items-center gap-3">
@@ -111,7 +115,10 @@ export function DispatchPage({ searchQuery, streamTick }: DispatchPageProps) {
                 tab === 'pending' ? 'bg-white text-[#0B0B0D]' : 'text-[#8B8B96] hover:text-white',
               )}
             >
-              Pending & Retrying ({(data?.retries.length ?? 0) + (data?.buffered.length ?? 0)})
+              Pending & Retrying
+              <span className="hidden sm:inline tabular-nums">
+                {' '}({(data?.retries.length ?? 0) + (data?.buffered.length ?? 0)})
+              </span>
             </button>
             <button
               type="button"
@@ -121,7 +128,10 @@ export function DispatchPage({ searchQuery, streamTick }: DispatchPageProps) {
                 tab === 'history' ? 'bg-white text-[#0B0B0D]' : 'text-[#8B8B96] hover:text-white',
               )}
             >
-              Dispatched History ({data?.history.length ?? 0})
+              Dispatched History
+              <span className="hidden sm:inline tabular-nums">
+                {' '}({data?.history_total ?? data?.history.length ?? 0})
+              </span>
             </button>
           </div>
 
@@ -247,50 +257,90 @@ export function DispatchPage({ searchQuery, streamTick }: DispatchPageProps) {
           </Card>
         </div>
       ) : (
-        <Card className="overflow-x-auto">
-          {(data?.history ?? []).length === 0 ? (
-            <div className="p-8 text-center text-[13px] text-[#7A7A86]">
-              No clusters have been dispatched yet.
-            </div>
-          ) : (
-            <table className="w-full text-left border-collapse min-w-[780px]">
-              <thead>
-                <tr className="border-b border-[#22222A] text-[11px] uppercase tracking-wider text-[#7A7A86]">
-                  <th className="py-3.5 px-5 font-medium">Headline</th>
-                  <th className="py-3.5 px-4 font-medium">Lead Source</th>
-                  <th className="py-3.5 px-4 font-medium">Mode</th>
-                  <th className="py-3.5 px-4 font-medium">Targets</th>
-                  <th className="py-3.5 px-4 font-medium">Score</th>
-                  <th className="py-3.5 px-5 font-medium text-right">Dispatched</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-[#22222A] text-[13px]">
-                {(data?.history ?? []).map((row) => (
-                  <tr key={row.cluster_hash} className="hover:bg-[#1D1D23] transition-colors">
-                    <td className="py-3.5 px-5 font-medium text-white max-w-[360px] truncate">
-                      {row.title}
-                    </td>
-                    <td className="py-3.5 px-4 text-[#A0A0AB]">
-                      {tierLabel(row.tier)} &middot; {row.lead_source}
-                    </td>
-                    <td className="py-3.5 px-4">
-                      <Badge variant={row.dispatch_mode === 'breaking' ? 'breaking' : 'heartbeat'}>
-                        {row.dispatch_mode || 'dispatched'}
-                      </Badge>
-                    </td>
-                    <td className="py-3.5 px-4 text-[#8B8B96]">{row.dispatch_targets || 'n/a'}</td>
-                    <td className="py-3.5 px-4 font-semibold text-white tabular-nums">
-                      {row.score.toFixed(2)}
-                    </td>
-                    <td className="py-3.5 px-5 text-right text-[#8B8B96] tabular-nums">
-                      {formatRelativeTime(row.dispatched_at || row.updated_at)}
-                    </td>
+        <div className="flex flex-col gap-4">
+          <Card className="overflow-x-auto">
+            {(data?.history ?? []).length === 0 ? (
+              <div className="p-8 text-center text-[13px] text-[#7A7A86]">
+                No clusters have been dispatched yet.
+              </div>
+            ) : (
+              <table className="w-full text-left border-collapse min-w-[780px]">
+                <thead>
+                  <tr className="border-b border-[#22222A] text-[11px] uppercase tracking-wider text-[#7A7A86]">
+                    <th className="py-3.5 px-5 font-medium">Headline</th>
+                    <th className="py-3.5 px-4 font-medium">Lead Source</th>
+                    <th className="py-3.5 px-4 font-medium">Mode</th>
+                    <th className="py-3.5 px-4 font-medium">Targets</th>
+                    <th className="py-3.5 px-4 font-medium">Score</th>
+                    <th className="py-3.5 px-5 font-medium text-right">Dispatched</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
-        </Card>
+                </thead>
+                <tbody className="divide-y divide-[#22222A] text-[13px]">
+                  {(data?.history ?? []).map((row) => (
+                    <tr key={row.cluster_hash} className="hover:bg-[#1D1D23] transition-colors">
+                      <td className="py-3.5 px-5 font-medium text-white max-w-[360px] truncate">
+                        {row.title}
+                      </td>
+                      <td className="py-3.5 px-4 text-[#A0A0AB]">
+                        {tierLabel(row.tier)} &middot; {row.lead_source}
+                      </td>
+                      <td className="py-3.5 px-4">
+                        <Badge variant={row.dispatch_mode === 'breaking' ? 'breaking' : 'heartbeat'}>
+                          {row.dispatch_mode || 'dispatched'}
+                        </Badge>
+                      </td>
+                      <td className="py-3.5 px-4 text-[#8B8B96]">{row.dispatch_targets || 'n/a'}</td>
+                      <td className="py-3.5 px-4 font-semibold text-white tabular-nums">
+                        {row.score.toFixed(2)}
+                      </td>
+                      <td className="py-3.5 px-5 text-right text-[#8B8B96] tabular-nums">
+                        {formatRelativeTime(row.dispatched_at || row.updated_at)}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </Card>
+
+          {(() => {
+            const total = data?.history_total ?? 0
+            const totalPages = Math.max(1, Math.ceil(total / limit))
+            const startIdx = total === 0 ? 0 : (page - 1) * limit + 1
+            const endIdx = Math.min(total, page * limit)
+            return (
+              <Card className="px-5 py-3.5 flex flex-wrap items-center justify-between gap-3 text-[12px] text-[#8B8B96]">
+                <span className="tabular-nums">
+                  Showing {startIdx}-{endIdx} of {total} dispatched
+                </span>
+
+                <div className="flex items-center gap-2">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={page <= 1}
+                    onClick={() => setPage((p) => Math.max(1, p - 1))}
+                  >
+                    <ChevronLeft className="w-3.5 h-3.5" />
+                    Prev
+                  </Button>
+                  <span className="tabular-nums px-2 text-[#D4D4DC]">
+                    Page {page} / {totalPages}
+                  </span>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={page >= totalPages}
+                    onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+                  >
+                    Next
+                    <ChevronRight className="w-3.5 h-3.5" />
+                  </Button>
+                </div>
+              </Card>
+            )
+          })()}
+        </div>
       )}
     </div>
   )

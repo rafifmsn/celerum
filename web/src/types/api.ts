@@ -169,6 +169,9 @@ export interface DispatchResponse {
   retries: WebhookRetryRecord[]
   buffered: ClusterRecord[]
   history: ClusterRecord[]
+  history_total: number
+  history_page: number
+  history_limit: number
 }
 
 export interface SettingsPayload {

@@ -116,9 +116,11 @@ export function importConfigYaml(yaml: string): Promise<{ imported: boolean; sou
   })
 }
 
-export function fetchDispatch(q = ''): Promise<DispatchResponse> {
+export function fetchDispatch(q = '', page = 1, limit = 20): Promise<DispatchResponse> {
   const params = new URLSearchParams()
   if (q) params.set('q', q)
+  params.set('page', String(page))
+  params.set('limit', String(limit))
   return requestJson<DispatchResponse>(`/api/dispatch?${params.toString()}`)
 }
 
@@ -162,9 +164,9 @@ export function discoverModels(body: {
   })
 }
 
-export function runDoctor(send = false): Promise<DoctorReport> {
+export function runDoctor(send = false, settings?: SettingsPayload): Promise<DoctorReport> {
   return requestJson<DoctorReport>('/api/doctor', {
     method: 'POST',
-    body: JSON.stringify({ send }),
+    body: JSON.stringify(settings ? { send, settings } : { send }),
   })
 }

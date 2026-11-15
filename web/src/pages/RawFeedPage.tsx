@@ -1,10 +1,9 @@
 import { useCallback, useEffect, useState } from 'react'
-import { ChevronLeft, ChevronRight, ExternalLink, Image as ImageIcon } from 'lucide-react'
+import { ChevronLeft, ChevronRight, ExternalLink } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
 import { Select } from '@/components/ui/select'
-import { Switch } from '@/components/ui/switch'
 import { fetchArticles } from '@/lib/api'
 import { formatRelativeTime, tierLabel } from '@/lib/utils'
 import type { ArticlesResponse } from '@/types/api'
@@ -18,8 +17,6 @@ export function RawFeedPage({ searchQuery, streamTick }: RawFeedPageProps) {
   const [category, setCategory] = useState('')
   const [source, setSource] = useState('')
   const [page, setPage] = useState(1)
-  const [showThumbnails, setShowThumbnails] = useState(true)
-  const [brokenImages, setBrokenImages] = useState<Record<string, boolean>>({})
   const [data, setData] = useState<ArticlesResponse | null>(null)
   const [loading, setLoading] = useState(true)
 
@@ -58,8 +55,8 @@ export function RawFeedPage({ searchQuery, streamTick }: RawFeedPageProps) {
       <Card className="p-5 flex flex-wrap items-center justify-between gap-4">
         <div>
           <h1 className="text-[20px] font-semibold text-white">Raw Article Stream</h1>
-          <p className="text-[12px] text-[#7A7A86] mt-0.5 tabular-nums">
-            Chronological RSS/Atom ingestion store &middot; {totalCount} persisted article(s)
+          <p className="text-[12px] text-[#7A7A86] mt-0.5">
+            Chronological RSS/Atom ingestion store
           </p>
         </div>
 
@@ -89,118 +86,96 @@ export function RawFeedPage({ searchQuery, streamTick }: RawFeedPageProps) {
               </option>
             ))}
           </Select>
-
-          <div className="flex items-center gap-2.5 px-3 py-1.5 rounded-xl bg-[#121215] border border-[#24242C]">
-            <ImageIcon className="w-3.5 h-3.5 text-[#8B8B96]" />
-            <span className="text-[12px] text-[#D4D4DC]">Show Thumbnails</span>
-            <Switch
-              checked={showThumbnails}
-              onCheckedChange={setShowThumbnails}
-              label="Show Thumbnails"
-            />
-          </div>
         </div>
       </Card>
 
-      <Card className="overflow-hidden">
-        {loading && !data ? (
-          <div className="p-8 text-center text-[13px] text-[#7A7A86]">Loading articles...</div>
-        ) : (data?.articles ?? []).length === 0 ? (
-          <div className="p-8 text-center text-[13px] text-[#7A7A86]">
-            No articles ingested for the current filter criteria.
-          </div>
-        ) : (
-          <div className="divide-y divide-[#22222A]">
-            {(data?.articles ?? []).map((article) => {
-              const desc = article.description?.trim()
-              const hasDistinctDesc =
-                Boolean(desc) && desc.toLowerCase() !== article.title.trim().toLowerCase()
-              const canShowThumb =
-                showThumbnails && Boolean(article.image_url) && !brokenImages[article.id]
+      {loading && !data ? (
+        <Card className="p-8 text-center text-[13px] text-[#7A7A86]">Loading articles...</Card>
+      ) : (data?.articles ?? []).length === 0 ? (
+        <Card className="p-8 text-center text-[13px] text-[#7A7A86]">
+          No articles ingested for the current filter criteria.
+        </Card>
+      ) : (
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-3.5">
+          {(data?.articles ?? []).map((article) => {
+            const desc = article.description?.trim()
+            const hasDistinctDesc =
+              Boolean(desc) && desc.toLowerCase() !== article.title.trim().toLowerCase()
 
-              return (
-                <a
-                  key={article.id}
-                  href={article.url}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="px-5 py-4 flex items-center justify-between gap-4 hover:bg-[#1D1D23] transition-colors group"
-                >
-                  <div className="min-w-0 flex-1 space-y-1">
-                    <div className="flex flex-wrap items-center gap-2 text-[11px] text-[#8B8B96]">
-                      <Badge variant={article.feed_tier === 1 ? 'tier1' : 'default'}>
-                        {tierLabel(article.feed_tier)}
-                      </Badge>
-                      <span className="font-medium text-[#D4D4DC]">
-                        {article.feed_name || article.feed_url}
-                      </span>
-                      {article.category && (
-                        <span className="px-2 py-0.5 rounded bg-[#121215] border border-[#24242C]">
-                          {article.category}
-                        </span>
-                      )}
-                      <span className="tabular-nums">
-                        &middot; {formatRelativeTime(article.published_at || article.ingested_at)}
-                      </span>
-                    </div>
-
-                    <div className="flex items-center gap-2">
-                      <h3 className="text-[14px] font-medium text-white group-hover:text-white leading-snug">
-                        {article.title}
-                      </h3>
-                      <ExternalLink className="w-3.5 h-3.5 text-[#6B6B76] opacity-0 group-hover:opacity-100 transition-opacity shrink-0" />
-                    </div>
-
-                    {hasDistinctDesc && (
-                      <p className="text-[12px] text-[#8B8B96] line-clamp-2">{desc}</p>
-                    )}
+            return (
+              <a
+                key={article.id}
+                href={article.url}
+                target="_blank"
+                rel="noreferrer"
+                className="bg-[#18181C] border border-[#22222A] hover:border-[#32323E] rounded-[22px] p-5 flex flex-col justify-between gap-3 transition-colors group"
+              >
+                <div className="space-y-2.5">
+                  <div className="flex flex-wrap items-center gap-2 text-[11px]">
+                    <Badge
+                      variant={
+                        article.feed_tier === 1
+                          ? 'tier1'
+                          : article.feed_tier === 2
+                            ? 'tier2'
+                            : 'tier3'
+                      }
+                    >
+                      {tierLabel(article.feed_tier)} &middot;{' '}
+                      {article.feed_name || article.feed_url}
+                    </Badge>
+                    {article.category && <Badge>{article.category}</Badge>}
+                    <span className="text-[#7A7A86] tabular-nums">
+                      {formatRelativeTime(article.published_at || article.ingested_at)}
+                    </span>
                   </div>
 
-                  {canShowThumb && (
-                    <img
-                      src={article.image_url}
-                      alt=""
-                      loading="lazy"
-                      onError={() =>
-                        setBrokenImages((prev) => ({ ...prev, [article.id]: true }))
-                      }
-                      className="w-20 h-14 object-cover rounded-xl border border-[#262630] shrink-0 bg-[#121215]"
-                    />
+                  <div className="flex items-start justify-between gap-3">
+                    <h3 className="text-[15px] font-semibold text-white group-hover:text-white leading-snug">
+                      {article.title}
+                    </h3>
+                    <ExternalLink className="w-3.5 h-3.5 text-[#6B6B76] opacity-0 group-hover:opacity-100 transition-opacity shrink-0 mt-1" />
+                  </div>
+
+                  {hasDistinctDesc && (
+                    <p className="text-[12px] text-[#A0A0AB] line-clamp-2 leading-relaxed">
+                      {desc}
+                    </p>
                   )}
-                </a>
-              )
-            })}
-          </div>
-        )}
+                </div>
+              </a>
+            )
+          })}
+        </div>
+      )}
 
-        <div className="px-5 py-3.5 bg-[#141418] border-t border-[#22222A] flex flex-wrap items-center justify-between gap-3 text-[12px] text-[#8B8B96]">
-          <span className="tabular-nums">
-            Showing {startIdx}-{endIdx} of {totalCount} articles
+      <Card className="px-5 py-3.5 flex flex-wrap items-center justify-between gap-3 text-[12px] text-[#8B8B96]">
+        <span className="tabular-nums">
+          Showing {startIdx}-{endIdx} of {totalCount} articles
+        </span>
+
+        <div className="flex items-center gap-2">
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={page <= 1}
+            onClick={() => setPage((p) => Math.max(1, p - 1))}
+          >
+            <ChevronLeft className="w-3.5 h-3.5" />
+            Prev
+          </Button>
+          <span className="tabular-nums px-2 text-[#D4D4DC]">
+            Page {page} / {totalPages}
           </span>
-
-          <div className="flex items-center gap-2">
-            <Button
-              size="sm"
-              variant="outline"
-              disabled={page <= 1}
-              onClick={() => setPage((p) => Math.max(1, p - 1))}
-            >
-              <ChevronLeft className="w-3.5 h-3.5" />
-              Prev
-            </Button>
-            <span className="tabular-nums px-2 text-[#D4D4DC]">
-              Page {page} / {totalPages}
-            </span>
-            <Button
-              size="sm"
-              variant="outline"
-              disabled={page >= totalPages}
-              onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
-            >
-              Next
-              <ChevronRight className="w-3.5 h-3.5" />
-            </Button>
-          </div>
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={page >= totalPages}
+            onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+          >
+            Next
+            <ChevronRight className="w-3.5 h-3.5" />
+          </Button>
         </div>
       </Card>
     </div>

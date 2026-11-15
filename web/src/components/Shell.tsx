@@ -7,12 +7,9 @@ import {
   Newspaper,
   Rss,
   Search,
-  Send,
   Settings,
-  Sliders,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
-import type { StreamStatus } from '@/lib/sse'
 
 interface NavItem {
   to: string
@@ -25,7 +22,6 @@ const PRIMARY_NAV: NavItem[] = [
   { to: '/intelligence', label: 'Intelligence', icon: Activity },
   { to: '/raw-feed', label: 'Raw Feed', icon: Newspaper },
   { to: '/sources', label: 'Sources', icon: Rss },
-  { to: '/dispatch', label: 'Dispatch', icon: Send },
 ]
 
 interface ShellProps {
@@ -33,7 +29,6 @@ interface ShellProps {
   searchValue: string
   onSearchChange: (val: string) => void
   searchPlaceholder?: string
-  streamStatus?: StreamStatus
 }
 
 export function Shell({
@@ -41,7 +36,6 @@ export function Shell({
   searchValue,
   onSearchChange,
   searchPlaceholder = 'Search clusters, sources, headlines...',
-  streamStatus = 'live',
 }: ShellProps) {
   const location = useLocation()
   const navigate = useNavigate()
@@ -53,21 +47,24 @@ export function Shell({
     <div className="min-h-screen w-full bg-[#0B0B0D] text-[#F4F4F6] flex flex-col">
       <div className="w-full max-w-[1680px] mx-auto px-4 sm:px-6 lg:px-8 py-4 sm:py-6 flex-1 flex flex-col gap-6">
         <header className="w-full bg-[#121215] border border-[#22222A] rounded-[24px] px-4 sm:px-5 py-3 flex flex-wrap items-center justify-between gap-3">
-          <div className="flex items-center gap-3 min-w-0">
+          <div className="w-full md:w-auto flex items-center justify-between md:justify-start gap-2 md:gap-3 min-w-0">
             <button
               type="button"
               onClick={() => navigate('/')}
-              className="flex items-center gap-2.5 pr-1 cursor-pointer"
+              className="flex items-center gap-2.5 pr-1 cursor-pointer shrink-0"
             >
-              <span className="w-9 h-9 rounded-full bg-[#1D1D22] border border-[#2C2C35] flex items-center justify-center text-white font-bold text-sm">
-                C
+              <span className="w-9 h-9 rounded-full bg-[#1D1D22] border border-[#2C2C35] overflow-hidden flex items-center justify-center shrink-0">
+                <img src="/logo.jpg" alt="Celerum" className="w-full h-full object-cover" />
               </span>
               <span className="hidden sm:inline text-[15px] font-semibold tracking-tight text-white">
                 Celerum
               </span>
             </button>
 
-            <nav aria-label="Primary navigation" className="flex items-center gap-1.5">
+            <nav
+              aria-label="Primary navigation"
+              className="flex-1 md:flex-initial flex items-center justify-evenly md:justify-start md:gap-1.5"
+            >
               {PRIMARY_NAV.map((item) => {
                 const Icon = item.icon
                 return (
@@ -92,22 +89,6 @@ export function Shell({
                   </NavLink>
                 )
               })}
-
-              <NavLink
-                to="/settings"
-                title="Settings"
-                aria-label="Settings"
-                className={({ isActive }) =>
-                  cn(
-                    'md:hidden w-10 h-10 rounded-full flex items-center justify-center transition-colors',
-                    isActive
-                      ? 'bg-white text-[#0B0B0D]'
-                      : 'bg-[#18181C] text-[#8B8B96] hover:text-white hover:bg-[#1E1E24]',
-                  )
-                }
-              >
-                <Sliders className="w-4 h-4" />
-              </NavLink>
             </nav>
           </div>
 
@@ -123,30 +104,13 @@ export function Shell({
               />
             </div>
 
-            <div
-              className="hidden sm:flex items-center gap-2 h-9 px-3 rounded-full bg-[#18181C] border border-[#24242C] text-[12px] text-[#A0A0AB]"
-              title={`Stream status: ${streamStatus}`}
-            >
-              <span
-                className={cn(
-                  'w-2 h-2 rounded-full',
-                  streamStatus === 'live'
-                    ? 'bg-emerald-400 animate-pulse'
-                    : streamStatus === 'connecting'
-                      ? 'bg-amber-400 animate-pulse'
-                      : 'bg-zinc-500',
-                )}
-              />
-              <span className="capitalize">{streamStatus === 'live' ? 'Live' : streamStatus}</span>
-            </div>
-
             <button
               type="button"
               onClick={() => navigate('/dispatch')}
               title="Dispatch & Retry Queue"
               aria-label="Dispatch & Retry Queue"
               className={cn(
-                'w-9 h-9 rounded-full border flex items-center justify-center transition-colors cursor-pointer',
+                'w-9 h-9 rounded-full border flex items-center justify-center transition-colors cursor-pointer shrink-0',
                 isDispatch
                   ? 'bg-white text-[#0B0B0D] border-white'
                   : 'bg-[#18181C] border-[#24242C] text-[#9A9AA6] hover:text-white hover:bg-[#22222A]',
@@ -161,7 +125,7 @@ export function Shell({
               title="Settings & Doctor"
               aria-label="Settings & Doctor"
               className={cn(
-                'hidden md:flex w-9 h-9 rounded-full border items-center justify-center transition-colors cursor-pointer',
+                'w-9 h-9 rounded-full border flex items-center justify-center transition-colors cursor-pointer shrink-0',
                 isSettings
                   ? 'bg-white text-[#0B0B0D] border-white'
                   : 'bg-[#18181C] border-[#24242C] text-[#9A9AA6] hover:text-white hover:bg-[#22222A]',

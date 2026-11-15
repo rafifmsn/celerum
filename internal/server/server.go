@@ -340,7 +340,17 @@ type retryView struct {
 }
 
 func (s *Server) handleGetDispatch(w http.ResponseWriter, r *http.Request) {
-	search := r.URL.Query().Get("q")
+	q := r.URL.Query()
+	search := q.Get("q")
+	page, _ := strconv.Atoi(q.Get("page"))
+	if page <= 0 {
+		page = 1
+	}
+	limit, _ := strconv.Atoi(q.Get("limit"))
+	if limit <= 0 || limit > 200 {
+		limit = 20
+	}
+
 	cfg, err := s.store.ExportToConfig()
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error(), "")
@@ -386,7 +396,7 @@ func (s *Server) handleGetDispatch(w http.ResponseWriter, r *http.Request) {
 		buffered = []store.ClusterRecord{}
 	}
 
-	history, err := s.store.QueryClusters("dispatched", "all", search, time.Time{}, "recent")
+	history, historyTotal, err := s.store.QueryDispatchedClustersPage(search, page, limit)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error(), "")
 		return
@@ -410,6 +420,9 @@ func (s *Server) handleGetDispatch(w http.ResponseWriter, r *http.Request) {
 		"retries":               retries,
 		"buffered":              buffered,
 		"history":               history,
+		"history_total":         historyTotal,
+		"history_page":          page,
+		"history_limit":         limit,
 	})
 }
 
@@ -460,6 +473,15 @@ func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error(), "")
 		return
+	}
+	if cfg.Keywords.Boost == nil {
+		cfg.Keywords.Boost = []string{}
+	}
+	if cfg.Keywords.Blocklist == nil {
+		cfg.Keywords.Blocklist = []string{}
+	}
+	if cfg.Dispatch.Webhook.Headers == nil {
+		cfg.Dispatch.Webhook.Headers = map[string]string{}
 	}
 	writeJSON(w, http.StatusOK, store.RuntimeSettings{
 		Engine:     cfg.Engine,
@@ -560,16 +582,29 @@ func (s *Server) handleDiscoverModels(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleDoctor(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Send bool `json:"send"`
+		Send     bool                   `json:"send"`
+		Settings *store.RuntimeSettings `json:"settings,omitempty"`
 	}
 	if r.Body != nil {
-		_ = json.NewDecoder(io.LimitReader(r.Body, 16<<10)).Decode(&req)
+		_ = json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&req)
 	}
 
 	cfg, err := s.store.ExportToConfig()
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error(), "")
 		return
+	}
+	if req.Settings != nil {
+		cfg = &config.Config{
+			Version:    cfg.Version,
+			Database:   cfg.Database,
+			Feeds:      cfg.Feeds,
+			Engine:     req.Settings.Engine,
+			Keywords:   req.Settings.Keywords,
+			Enrichment: req.Settings.Enrichment,
+			LLM:        req.Settings.LLM,
+			Dispatch:   req.Settings.Dispatch,
+		}
 	}
 
 	report := doctor.Run(r.Context(), cfg, s.store, doctor.Options{Send: req.Send})

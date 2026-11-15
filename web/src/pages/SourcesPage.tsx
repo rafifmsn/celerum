@@ -181,14 +181,25 @@ export function SourcesPage({ searchQuery, streamTick }: SourcesPageProps) {
     }
   }
 
+  const cachedCount = data?.etag_cached_count ?? 0
+  const freshCount = data?.updated_200_count ?? 0
+  const totalPolled = cachedCount + freshCount
+  const cacheRatioPct = totalPolled > 0 ? Math.round((cachedCount / totalPolled) * 100) : 0
+  const t1Count = data?.tier1_count ?? 0
+  const t2Count = data?.tier2_count ?? 0
+  const t3Count = data?.tier3_count ?? 0
+  const totalSources = Math.max(1, t1Count + t2Count + t3Count)
+  const t1Pct = Math.round((t1Count / totalSources) * 100)
+  const t2Pct = Math.round((t2Count / totalSources) * 100)
+  const t3Pct = t1Count + t2Count + t3Count > 0 ? Math.max(0, 100 - t1Pct - t2Pct) : 0
+
   return (
     <div className="flex flex-col gap-5">
       <Card className="p-5 flex flex-wrap items-center justify-between gap-4">
         <div>
           <h1 className="text-[20px] font-semibold text-white">Feed Sources & Polling Health</h1>
-          <p className="text-[12px] text-[#7A7A86] mt-0.5 tabular-nums">
-            Adaptive ETag/Last-Modified scheduling &middot; {data?.etag_cached_count ?? 0} cached /{' '}
-            {data?.updated_200_count ?? 0} fresh
+          <p className="text-[12px] text-[#7A7A86] mt-0.5">
+            Adaptive ETag/Last-Modified scheduling
           </p>
         </div>
 
@@ -227,33 +238,55 @@ export function SourcesPage({ searchQuery, streamTick }: SourcesPageProps) {
         </div>
       )}
 
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        <Card className="p-5 flex items-center justify-between">
-          <div>
-            <div className="text-[12px] text-[#8B8B96]">Tier 1 Primary Sources (3.0x weight)</div>
-            <div className="text-[26px] font-semibold text-white tabular-nums mt-1">
-              {data?.tier1_count ?? 0}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-3.5">
+        <Card className="p-4 flex flex-col justify-between gap-3">
+          <div className="flex items-center justify-between text-[12px] text-[#8B8B96]">
+            <span>Source Tiers</span>
+            <span className="tabular-nums text-[#A0A0AB]">{data?.total_count ?? 0} total</span>
+          </div>
+          <div className="grid grid-cols-3 gap-2">
+            <div className="px-2.5 py-2 rounded-xl bg-[#121215] border border-[#22222A] flex items-center justify-between">
+              <Badge variant="tier1">T1</Badge>
+              <span className="text-[15px] font-semibold text-white tabular-nums">{t1Count}</span>
+            </div>
+            <div className="px-2.5 py-2 rounded-xl bg-[#121215] border border-[#22222A] flex items-center justify-between">
+              <Badge variant="tier2">T2</Badge>
+              <span className="text-[15px] font-semibold text-white tabular-nums">{t2Count}</span>
+            </div>
+            <div className="px-2.5 py-2 rounded-xl bg-[#121215] border border-[#22222A] flex items-center justify-between">
+              <Badge variant="tier3">T3+</Badge>
+              <span className="text-[15px] font-semibold text-white tabular-nums">{t3Count}</span>
             </div>
           </div>
-          <Badge variant="tier1">T1</Badge>
         </Card>
-        <Card className="p-5 flex items-center justify-between">
-          <div>
-            <div className="text-[12px] text-[#8B8B96]">Tier 2 Wire Services (2.0x weight)</div>
-            <div className="text-[26px] font-semibold text-white tabular-nums mt-1">
-              {data?.tier2_count ?? 0}
-            </div>
+
+        <Card className="p-4 flex flex-col justify-between gap-3">
+          <div className="flex items-center justify-between text-[12px] text-[#8B8B96]">
+            <span>Tier Share</span>
+            <span className="tabular-nums text-[#D4D4DC]">
+              {t1Pct}% / {t2Pct}% / {t3Pct}%
+            </span>
           </div>
-          <Badge variant="tier2">T2</Badge>
+          <div className="h-2.5 w-full rounded-full bg-[#121215] border border-[#22222A] overflow-hidden flex">
+            <div className="bg-white h-full transition-all" style={{ width: `${t1Pct}%` }} />
+            <div className="bg-[#7A7A86] h-full transition-all" style={{ width: `${t2Pct}%` }} />
+            <div className="bg-[#34343F] h-full transition-all" style={{ width: `${t3Pct}%` }} />
+          </div>
         </Card>
-        <Card className="p-5 flex items-center justify-between">
-          <div>
-            <div className="text-[12px] text-[#8B8B96]">Tier 3+ Niche Feeds (1.0x weight)</div>
-            <div className="text-[26px] font-semibold text-white tabular-nums mt-1">
-              {data?.tier3_count ?? 0}
-            </div>
+
+        <Card className="p-4 flex flex-col justify-between gap-2">
+          <div className="flex items-center justify-between text-[12px] text-[#8B8B96]">
+            <span>Cache Ratio</span>
+            <span className="tabular-nums text-[#A0A0AB]">{cacheRatioPct}%</span>
           </div>
-          <Badge variant="tier3">T3+</Badge>
+          <div className="flex items-baseline justify-between gap-2">
+            <span className="text-[22px] font-semibold text-white tabular-nums">
+              {cachedCount}/{totalPolled}
+            </span>
+            <span className="text-[11px] text-[#7A7A86] tabular-nums">
+              304 cached / polled
+            </span>
+          </div>
         </Card>
       </div>
 

@@ -2,6 +2,7 @@ package engine
 
 import (
 	"math"
+	"sort"
 	"strings"
 	"time"
 
@@ -397,6 +398,12 @@ func (e *Engine) GetClustersView(filter, tierFilter, sortBy, search string) (Clu
 			})
 		}
 	}
+	sort.Slice(resp.BoostKeywords, func(i, j int) bool {
+		if resp.BoostKeywords[i].Matches == resp.BoostKeywords[j].Matches {
+			return resp.BoostKeywords[i].Keyword < resp.BoostKeywords[j].Keyword
+		}
+		return resp.BoostKeywords[i].Matches > resp.BoostKeywords[j].Matches
+	})
 
 	filtered, err := e.store.QueryClusters("all", tierFilter, search, since, sortBy)
 	if err != nil {

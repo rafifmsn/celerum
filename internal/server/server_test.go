@@ -105,7 +105,23 @@ func TestServerAPIRoutes(t *testing.T) {
 		t.Fatalf("POST /api/sources expected 201, got %d: %s", rec.Code, rec.Body.String())
 	}
 
-	// 4. Settings strict validation
+	// 4. Settings get & strict validation
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/settings", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /api/settings expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var settingsMap map[string]map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &settingsMap); err != nil {
+		t.Fatalf("GET /api/settings invalid JSON: %v", err)
+	}
+	if _, ok := settingsMap["engine"]["poll_interval"]; !ok {
+		t.Fatalf("expected snake_case poll_interval in GET /api/settings, got keys: %#v", settingsMap["engine"])
+	}
+	if _, ok := settingsMap["keywords"]["boost"]; !ok {
+		t.Fatalf("expected snake_case boost array in GET /api/settings, got: %#v", settingsMap["keywords"])
+	}
+
 	badSettings := `{"engine":{"poll_interval":"5m","window_duration":"3h","flush_interval":"1h"},"enrichment":{"scraper":"jina","jina_api_key":""}}`
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPut, "/api/settings", strings.NewReader(badSettings)))
@@ -126,11 +142,17 @@ func TestServerAPIRoutes(t *testing.T) {
 		t.Fatalf("POST /api/config/yaml expected 200, got %d: %s", rec.Code, rec.Body.String())
 	}
 
-	// 6. Dispatch & SPA root
+	// 6. Dispatch, Doctor preview & SPA root
 	rec = httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/dispatch", nil))
-	if rec.Code != http.StatusOK {
-		t.Fatalf("GET /api/dispatch expected 200, got %d", rec.Code)
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/doctor", strings.NewReader(`{"send":false,"settings":{"engine":{"poll_interval":"5m","window_duration":"24h","flush_interval":"1h"},"enrichment":{"scraper":"jina","jina_api_key":""},"llm":{"enabled":false},"dispatch":{}}}`)))
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "jina_api_key") {
+		t.Fatalf("POST /api/doctor preview failed: status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/dispatch?page=2&limit=10", nil))
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"history_total"`) || !strings.Contains(rec.Body.String(), `"history_page":2`) {
+		t.Fatalf("GET /api/dispatch expected paginated history metadata, got %d: %s", rec.Code, rec.Body.String())
 	}
 
 	rec = httptest.NewRecorder()

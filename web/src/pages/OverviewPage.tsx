@@ -44,6 +44,7 @@ export function OverviewPage({
 }: OverviewPageProps) {
   const navigate = useNavigate()
   const [selectedClusterId, setSelectedClusterId] = useState<string | null>(null)
+  const [summaryExpanded, setSummaryExpanded] = useState(false)
   const [rightFilter, setRightFilter] = useState('')
   const [flushing, setFlushing] = useState(false)
   const [flushNotice, setFlushNotice] = useState<string | null>(null)
@@ -78,6 +79,19 @@ export function OverviewPage({
     return clusters.find((c) => c.id === selectedClusterId) ?? clusters[0]
   }, [clusters, selectedClusterId])
 
+  useEffect(() => {
+    setSummaryExpanded(false)
+  }, [activeCluster?.id])
+
+  const rawSummary =
+    activeCluster?.summary ||
+    'No synthesized paragraph recorded yet; inspect linked publisher coverage below.'
+  const isLongSummary = rawSummary.length > 220
+  const displaySummary =
+    isLongSummary && !summaryExpanded
+      ? `${rawSummary.slice(0, 220).replace(/\s+\S*$/, '')}...`
+      : rawSummary
+
   const handleFlush = async () => {
     setFlushing(true)
     setFlushNotice(null)
@@ -108,9 +122,6 @@ export function OverviewPage({
                 <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-[#121215] border border-[#24242C]">
                   <span className="w-1.5 h-1.5 rounded-full bg-white" />
                   Live Engine Telemetry
-                </span>
-                <span className="tabular-nums">
-                  {data?.active_feeds_count ?? 0} Active Feeds
                 </span>
               </div>
 
@@ -281,13 +292,8 @@ export function OverviewPage({
 
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
           <Card className="p-5 flex flex-col gap-4">
-            <div className="flex items-center justify-between">
-              <div>
-                <h2 className="text-[14px] font-semibold text-white">Pipeline Efficiency Matrix</h2>
-                <p className="text-[12px] text-[#7A7A86]">
-                  Enrichment ({data?.scraper_label || 'RSS'}) and shingle pruning cadence
-                </p>
-              </div>
+            <div className="flex items-center justify-between gap-3">
+              <h2 className="text-[14px] font-semibold text-white">Pipeline Efficiency Matrix</h2>
               <Badge>{Math.round(data?.llm_enriched_pct ?? 0)}% LLM</Badge>
             </div>
 
@@ -325,13 +331,8 @@ export function OverviewPage({
           </Card>
 
           <Card className="p-5 flex flex-col gap-4">
-            <div className="flex items-center justify-between">
-              <div>
-                <h2 className="text-[14px] font-semibold text-white">Dispatch & SLA Matrix</h2>
-                <p className="text-[12px] text-[#7A7A86]">
-                  Buffered Top-{data?.top_k_limit ?? 3} queue and webhook retry latency
-                </p>
-              </div>
+            <div className="flex items-center justify-between gap-3">
+              <h2 className="text-[14px] font-semibold text-white">Dispatch & SLA Matrix</h2>
               <Badge>{Math.round(data?.delivery_sla_pct ?? 100)}% SLA</Badge>
             </div>
 
@@ -406,12 +407,9 @@ export function OverviewPage({
       </div>
 
       <aside className="xl:col-span-4 bg-[#141418] border border-[#22222A] rounded-[24px] p-5 flex flex-col gap-4 xl:sticky xl:top-6">
-        <div className="flex items-center justify-between gap-2">
-          <div className="flex items-center gap-2">
-            <Sparkles className="w-4 h-4 text-white" />
-            <h2 className="text-[14px] font-semibold text-white">AI Synthesis Briefing</h2>
-          </div>
-          <Badge>{clusters.length} tracked</Badge>
+        <div className="flex items-center gap-2">
+          <Sparkles className="w-4 h-4 text-white" />
+          <h2 className="text-[14px] font-semibold text-white">AI Synthesis Briefing</h2>
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
@@ -450,10 +448,18 @@ export function OverviewPage({
               {activeCluster.headline}
             </h3>
 
-            <p className="text-[13px] text-[#A0A0AB] leading-relaxed">
-              {activeCluster.summary ||
-                'No synthesized paragraph recorded yet; inspect linked publisher coverage below.'}
-            </p>
+            <div className="space-y-1.5">
+              <p className="text-[13px] text-[#A0A0AB] leading-relaxed">{displaySummary}</p>
+              {isLongSummary && (
+                <button
+                  type="button"
+                  onClick={() => setSummaryExpanded((prev) => !prev)}
+                  className="text-[12px] font-medium text-white hover:underline cursor-pointer"
+                >
+                  {summaryExpanded ? 'Read less' : 'Read more'}
+                </button>
+              )}
+            </div>
 
             <div className="border-t border-[#24242C] pt-3 space-y-2">
               <div className="text-[11px] uppercase tracking-wider text-[#6B6B76]">

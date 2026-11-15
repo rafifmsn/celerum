@@ -1,6 +1,7 @@
 package store
 
 import (
+	"fmt"
 	"path/filepath"
 	"testing"
 	"time"
@@ -181,6 +182,78 @@ func TestStoreBootstrapSourcesArticlesClustersAndDualPrune(t *testing.T) {
 	}
 	if totalAfter != 5 {
 		t.Fatalf("expected 5 articles remaining after per-feed cap 5, got %d", totalAfter)
+	}
+}
+
+func TestLegacyRuntimeSettingsMigration(t *testing.T) {
+	st, err := New(filepath.Join(t.TempDir(), "legacy.db"))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer st.Close()
+
+	legacyJSON := `{"engine":{"WindowDuration":"24h"},"enrichment":{"Scraper":"firecrawl","FirecrawlAPIKey":"fc-legacy"},"llm":{"Enabled":true,"Provider":"openrouter","APIKey":"sk-legacy"},"dispatch":{"Telegram":{"Enabled":true,"BotToken":"bot-legacy","ChatID":"123"}}}`
+	if _, err := st.db.Exec(`INSERT INTO settings (key, value_json, updated_at) VALUES ('runtime_config', ?, 1);`, legacyJSON); err != nil {
+		t.Fatalf("seed legacy settings: %v", err)
+	}
+
+	rt, err := st.LoadRuntimeSettings()
+	if err != nil {
+		t.Fatalf("LoadRuntimeSettings: %v", err)
+	}
+	if rt.Engine.WindowDuration != "24h" || rt.Enrichment.FirecrawlAPIKey != "fc-legacy" || rt.LLM.APIKey != "sk-legacy" || rt.Dispatch.Telegram.BotToken != "bot-legacy" {
+		t.Fatalf("expected legacy keys preserved, got %+v", rt)
+	}
+}
+
+func TestDispatchedClustersPagination(t *testing.T) {
+	st, err := New(filepath.Join(t.TempDir(), "dispatch_page.db"))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer st.Close()
+
+	now := time.Now().UTC()
+	var recs []ClusterRecord
+	for i := 0; i < 5; i++ {
+		recs = append(recs, ClusterRecord{
+			ClusterHash:      fmt.Sprintf("hash-%d", i),
+			RepresentativeID: fmt.Sprintf("rep-%d", i),
+			Title:            fmt.Sprintf("Dispatched headline %d", i),
+			Score:            10.0 + float64(i),
+			Tier:             1,
+			SourceCount:      2,
+			LeadSource:       "CoinDesk",
+			Status:           "dispatched",
+			DispatchMode:     "breaking",
+			CreatedAt:        now,
+			UpdatedAt:        now.Add(time.Duration(i) * time.Minute),
+			DispatchedAt:     now.Add(time.Duration(i) * time.Minute),
+		})
+	}
+	if err := st.UpsertActiveClusters(recs); err != nil {
+		t.Fatalf("UpsertActiveClusters: %v", err)
+	}
+	for _, r := range recs {
+		if err := st.MarkClusterDispatchedFull(r.ClusterHash, r.Summary, r.Enriched, r.DispatchMode, "Telegram", r.ScraperUsed, r.DispatchedAt); err != nil {
+			t.Fatalf("MarkClusterDispatchedFull: %v", err)
+		}
+	}
+
+	page1, total, err := st.QueryDispatchedClustersPage("", 1, 2)
+	if err != nil {
+		t.Fatalf("QueryDispatchedClustersPage page 1: %v", err)
+	}
+	if total != 5 || len(page1) != 2 {
+		t.Fatalf("expected total=5 len=2 on page 1, got total=%d len=%d", total, len(page1))
+	}
+
+	page3, _, err := st.QueryDispatchedClustersPage("", 3, 2)
+	if err != nil {
+		t.Fatalf("QueryDispatchedClustersPage page 3: %v", err)
+	}
+	if len(page3) != 1 {
+		t.Fatalf("expected 1 row on page 3, got %d", len(page3))
 	}
 }
 

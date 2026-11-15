@@ -73,9 +73,6 @@ export function IntelligencePage({ searchQuery, streamTick }: IntelligencePagePr
           </div>
 
           <div className="flex items-center gap-2.5">
-            <span className="text-[12px] text-[#7A7A86] tabular-nums">
-              Window: {data?.window_duration || '24h'}
-            </span>
             <Select value={sort} onChange={(e) => setSort(e.target.value)} aria-label="Sort clusters">
               <option value="score">Highest Score</option>
               <option value="recent">Most Recent</option>
@@ -98,51 +95,51 @@ export function IntelligencePage({ searchQuery, streamTick }: IntelligencePagePr
               const isBreaking = cluster.score >= (data?.breaking_threshold ?? 8)
               return (
                 <Card key={cluster.cluster_hash} className="p-5 transition-colors hover:border-[#32323E]">
-                  <div className="flex items-start justify-between gap-4">
-                    <div className="space-y-2 min-w-0 flex-1">
-                      <div className="flex flex-wrap items-center gap-2 text-[11px]">
-                        <Badge variant={isBreaking ? 'breaking' : 'heartbeat'}>
-                          Score {cluster.score.toFixed(2)}
+                  <div className="space-y-2.5">
+                    <div className="flex flex-wrap items-center gap-2 text-[11px]">
+                      <Badge variant={isBreaking ? 'breaking' : 'heartbeat'}>
+                        Score {cluster.score.toFixed(2)}
+                      </Badge>
+                      <Badge variant={cluster.tier === 1 ? 'tier1' : cluster.tier === 2 ? 'tier2' : 'tier3'}>
+                        {tierLabel(cluster.tier)} &middot; {cluster.lead_source || 'Unknown'}
+                      </Badge>
+                      {cluster.category && <Badge>{cluster.category}</Badge>}
+                      {cluster.enriched && (
+                        <Badge className="gap-1">
+                          <Sparkles className="w-3 h-3" />
+                          Synthesized
                         </Badge>
-                        <Badge variant={cluster.tier === 1 ? 'tier1' : cluster.tier === 2 ? 'tier2' : 'tier3'}>
-                          {tierLabel(cluster.tier)} &middot; {cluster.lead_source || 'Unknown'}
-                        </Badge>
-                        {cluster.category && <Badge>{cluster.category}</Badge>}
-                        {cluster.enriched && (
-                          <Badge className="gap-1">
-                            <Sparkles className="w-3 h-3" />
-                            Synthesized
-                          </Badge>
-                        )}
-                        <span className="text-[#7A7A86] tabular-nums">
-                          {formatRelativeTime(cluster.updated_at)}
-                        </span>
-                      </div>
-
-                      <h3 className="text-[16px] font-semibold text-white leading-snug">
-                        {cluster.title}
-                      </h3>
-
-                      {cluster.summary && (
-                        <p className="text-[13px] text-[#A0A0AB] leading-relaxed">
-                          {cluster.summary}
-                        </p>
                       )}
+                      <span className="text-[#7A7A86] tabular-nums">
+                        {formatRelativeTime(cluster.updated_at)}
+                      </span>
                     </div>
 
-                    <button
-                      type="button"
-                      onClick={() => toggleExpand(cluster.cluster_hash)}
-                      className="shrink-0 flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-[#121215] border border-[#24242C] text-[12px] text-[#D4D4DC] hover:bg-[#1E1E25] cursor-pointer tabular-nums"
-                    >
-                      <Layers className="w-3.5 h-3.5" />
-                      <span>{cluster.source_count} sources</span>
-                      {isOpen ? (
-                        <ChevronDown className="w-3.5 h-3.5" />
-                      ) : (
-                        <ChevronRight className="w-3.5 h-3.5" />
-                      )}
-                    </button>
+                    <h3 className="text-[16px] font-semibold text-white leading-snug">
+                      {cluster.title}
+                    </h3>
+
+                    {cluster.summary && (
+                      <p className="text-[13px] text-[#A0A0AB] leading-relaxed">
+                        {cluster.summary}
+                      </p>
+                    )}
+
+                    <div className="pt-1">
+                      <button
+                        type="button"
+                        onClick={() => toggleExpand(cluster.cluster_hash)}
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-[#121215] border border-[#24242C] text-[12px] text-[#D4D4DC] hover:bg-[#1E1E25] cursor-pointer tabular-nums"
+                      >
+                        <Layers className="w-3.5 h-3.5" />
+                        <span>{cluster.source_count} sources</span>
+                        {isOpen ? (
+                          <ChevronDown className="w-3.5 h-3.5" />
+                        ) : (
+                          <ChevronRight className="w-3.5 h-3.5" />
+                        )}
+                      </button>
+                    </div>
                   </div>
 
                   {isOpen && (
@@ -183,18 +180,17 @@ export function IntelligencePage({ searchQuery, streamTick }: IntelligencePagePr
                 </Card>
               )
             })}
+
+            <div className="pt-2 pb-1 text-center text-[12px] text-[#6B6B76] tabular-nums">
+              End of clusters in current {data?.window_duration || '24h'} sliding window
+            </div>
           </div>
         )}
       </div>
 
       <aside className="xl:col-span-4 flex flex-col gap-5 xl:sticky xl:top-6">
         <Card className="p-5 space-y-4">
-          <div className="flex items-center justify-between">
-            <h2 className="text-[14px] font-semibold text-white">Scoring Distribution</h2>
-            <span className="text-[12px] text-[#7A7A86] tabular-nums">
-              {data?.total_window_clusters ?? 0} total
-            </span>
-          </div>
+          <h2 className="text-[14px] font-semibold text-white">Scoring Distribution</h2>
 
           <div className="space-y-3">
             <div>
@@ -222,22 +218,33 @@ export function IntelligencePage({ searchQuery, streamTick }: IntelligencePagePr
         </Card>
 
         <Card className="p-5 space-y-3">
-          <h2 className="text-[14px] font-semibold text-white">Active Keyword Boosts</h2>
-          {(data?.boost_keywords ?? []).length === 0 ? (
-            <p className="text-[12px] text-[#7A7A86]">No boost keywords configured.</p>
-          ) : (
-            <div className="space-y-2">
-              {(data?.boost_keywords ?? []).map((kw) => (
-                <div
-                  key={kw.keyword}
-                  className="flex items-center justify-between px-3 py-2 rounded-xl bg-[#121215] border border-[#22222A] text-[12px]"
-                >
-                  <span className="text-[#E4E4EA]">{kw.keyword}</span>
-                  <span className="text-[#8B8B96] tabular-nums">{kw.matches} hits</span>
-                </div>
-              ))}
-            </div>
-          )}
+          <h2 className="text-[14px] font-semibold text-white">Top 5 Keyword Boost</h2>
+          {(() => {
+            const topBoosts = (data?.boost_keywords ?? [])
+              .filter((kw) => kw.matches > 0)
+              .sort((a, b) => b.matches - a.matches)
+              .slice(0, 5)
+            if (topBoosts.length === 0) {
+              return (
+                <p className="text-[12px] text-[#7A7A86]">
+                  No keywords hit in the current window.
+                </p>
+              )
+            }
+            return (
+              <div className="space-y-2">
+                {topBoosts.map((kw) => (
+                  <div
+                    key={kw.keyword}
+                    className="flex items-center justify-between px-3 py-2 rounded-xl bg-[#121215] border border-[#22222A] text-[12px]"
+                  >
+                    <span className="text-[#E4E4EA]">{kw.keyword}</span>
+                    <span className="text-[#8B8B96] tabular-nums">{kw.matches} hits</span>
+                  </div>
+                ))}
+              </div>
+            )
+          })()}
         </Card>
 
         <Card className="p-5 space-y-3">

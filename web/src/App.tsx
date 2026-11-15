@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Navigate, Route, Routes, useLocation } from 'react-router-dom'
+import { ErrorBoundary } from '@/components/ErrorBoundary'
 import { Shell } from '@/components/Shell'
 import { fetchOverview } from '@/lib/api'
 import { useTelemetryStream } from '@/lib/sse'
@@ -22,7 +23,7 @@ export function App() {
     setStreamTick((t) => t + 1)
   }, [])
 
-  const streamStatus = useTelemetryStream(handleStreamUpdate)
+  useTelemetryStream(handleStreamUpdate)
 
   const loadOverview = useCallback(async () => {
     try {
@@ -40,43 +41,41 @@ export function App() {
   }, [location.pathname, loadOverview, streamTick])
 
   return (
-    <Shell
-      searchValue={searchQuery}
-      onSearchChange={setSearchQuery}
-      streamStatus={streamStatus}
-    >
-      <Routes>
-        <Route
-          path="/"
-          element={
-            <OverviewPage
-              data={overviewData}
-              tier={overviewTier}
-              onTierChange={setOverviewTier}
-              searchQuery={searchQuery}
-              onRefresh={() => void loadOverview()}
-            />
-          }
-        />
-        <Route
-          path="/intelligence"
-          element={<IntelligencePage searchQuery={searchQuery} streamTick={streamTick} />}
-        />
-        <Route
-          path="/raw-feed"
-          element={<RawFeedPage searchQuery={searchQuery} streamTick={streamTick} />}
-        />
-        <Route
-          path="/sources"
-          element={<SourcesPage searchQuery={searchQuery} streamTick={streamTick} />}
-        />
-        <Route
-          path="/dispatch"
-          element={<DispatchPage searchQuery={searchQuery} streamTick={streamTick} />}
-        />
-        <Route path="/settings" element={<SettingsPage />} />
-        <Route path="*" element={<Navigate to="/" replace />} />
-      </Routes>
+    <Shell searchValue={searchQuery} onSearchChange={setSearchQuery}>
+      <ErrorBoundary resetKey={location.pathname}>
+        <Routes>
+          <Route
+            path="/"
+            element={
+              <OverviewPage
+                data={overviewData}
+                tier={overviewTier}
+                onTierChange={setOverviewTier}
+                searchQuery={searchQuery}
+                onRefresh={() => void loadOverview()}
+              />
+            }
+          />
+          <Route
+            path="/intelligence"
+            element={<IntelligencePage searchQuery={searchQuery} streamTick={streamTick} />}
+          />
+          <Route
+            path="/raw-feed"
+            element={<RawFeedPage searchQuery={searchQuery} streamTick={streamTick} />}
+          />
+          <Route
+            path="/sources"
+            element={<SourcesPage searchQuery={searchQuery} streamTick={streamTick} />}
+          />
+          <Route
+            path="/dispatch"
+            element={<DispatchPage searchQuery={searchQuery} streamTick={streamTick} />}
+          />
+          <Route path="/settings" element={<SettingsPage />} />
+          <Route path="*" element={<Navigate to="/" replace />} />
+        </Routes>
+      </ErrorBoundary>
     </Shell>
   )
 }

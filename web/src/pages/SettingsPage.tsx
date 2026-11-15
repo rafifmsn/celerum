@@ -26,8 +26,41 @@ export function SettingsPage() {
 
   const load = useCallback(async () => {
     const res = await fetchSettings()
-    setSavedSnapshot(res)
-    setDraft(structuredClone(res))
+    const normalized: SettingsPayload = {
+      ...res,
+      keywords: {
+        boost: res.keywords?.boost ?? [],
+        blocklist: res.keywords?.blocklist ?? [],
+      },
+      enrichment: {
+        scraper: res.enrichment?.scraper ?? 'none',
+        jina_api_key: res.enrichment?.jina_api_key ?? '',
+        firecrawl_api_key: res.enrichment?.firecrawl_api_key ?? '',
+      },
+      llm: {
+        enabled: Boolean(res.llm?.enabled),
+        provider: res.llm?.provider ?? 'openai',
+        base_url: res.llm?.base_url ?? '',
+        model: res.llm?.model ?? '',
+        api_key: res.llm?.api_key ?? '',
+        language: res.llm?.language ?? 'en',
+        system_prompt: res.llm?.system_prompt ?? '',
+      },
+      dispatch: {
+        telegram: {
+          enabled: Boolean(res.dispatch?.telegram?.enabled),
+          bot_token: res.dispatch?.telegram?.bot_token ?? '',
+          chat_id: res.dispatch?.telegram?.chat_id ?? '',
+        },
+        webhook: {
+          enabled: Boolean(res.dispatch?.webhook?.enabled),
+          url: res.dispatch?.webhook?.url ?? '',
+          headers: res.dispatch?.webhook?.headers ?? {},
+        },
+      },
+    }
+    setSavedSnapshot(normalized)
+    setDraft(structuredClone(normalized))
   }, [])
 
   useEffect(() => {
@@ -114,7 +147,7 @@ export function SettingsPage() {
   const handleRunDoctor = async () => {
     setRunningDoctor(true)
     try {
-      const report = await runDoctor(false)
+      const report = await runDoctor(false, draft ?? undefined)
       setDoctorReport(report)
     } finally {
       setRunningDoctor(false)
@@ -158,12 +191,7 @@ export function SettingsPage() {
     <div className="grid grid-cols-1 xl:grid-cols-12 gap-5 items-start">
       <div className="xl:col-span-8 flex flex-col gap-5">
         <Card className="p-5 flex flex-wrap items-center justify-between gap-4">
-          <div>
-            <h1 className="text-[20px] font-semibold text-white">Pipeline Settings & Secrets</h1>
-            <p className="text-[12px] text-[#7A7A86] mt-0.5">
-              Changes validate strictly and reload the live engine without restarting.
-            </p>
-          </div>
+          <h1 className="text-[20px] font-semibold text-white">Pipeline Settings & Secrets</h1>
           <div className="flex items-center gap-2.5">
             <Button variant="ghost" onClick={handleDiscard}>
               Discard Changes
@@ -251,12 +279,12 @@ export function SettingsPage() {
               />
             </div>
 
-            <div>
+            <div className="min-w-0">
               <label className="block text-[12px] text-[#9A9AA6] mb-1.5">Model</label>
-              <div className="flex gap-2">
+              <div className="flex items-center gap-2 min-w-0">
                 {models.length > 0 ? (
                   <Select
-                    className="flex-1"
+                    className="flex-1 min-w-0 w-full truncate"
                     value={draft.llm.model}
                     onChange={(e) =>
                       setDraft({ ...draft, llm: { ...draft.llm, model: e.target.value } })
@@ -273,7 +301,7 @@ export function SettingsPage() {
                   </Select>
                 ) : (
                   <Input
-                    className="flex-1"
+                    className="flex-1 min-w-0"
                     value={draft.llm.model}
                     onChange={(e) =>
                       setDraft({ ...draft, llm: { ...draft.llm, model: e.target.value } })
@@ -281,7 +309,12 @@ export function SettingsPage() {
                     placeholder="gpt-4o-mini"
                   />
                 )}
-                <Button variant="secondary" onClick={handleDiscoverModels} disabled={discovering}>
+                <Button
+                  variant="secondary"
+                  className="shrink-0 whitespace-nowrap"
+                  onClick={handleDiscoverModels}
+                  disabled={discovering}
+                >
                   <RefreshCw className={cn('w-3.5 h-3.5', discovering && 'animate-spin')} />
                   Fetch Models
                 </Button>
@@ -549,14 +582,14 @@ export function SettingsPage() {
         </Card>
       </div>
 
-      <aside className="xl:col-span-4 xl:sticky xl:top-6">
-        <Card className="p-5 space-y-4">
+      <aside className="xl:col-span-4 min-w-0 xl:sticky xl:top-6">
+        <Card className="p-5 space-y-4 overflow-hidden">
           <div className="flex items-center justify-between gap-2">
-            <div className="flex items-center gap-2">
-              <Stethoscope className="w-4 h-4 text-white" />
-              <h2 className="text-[15px] font-semibold text-white">System Doctor Diagnostics</h2>
+            <div className="flex items-center gap-2 min-w-0">
+              <Stethoscope className="w-4 h-4 text-white shrink-0" />
+              <h2 className="text-[15px] font-semibold text-white truncate">System Doctor Diagnostics</h2>
             </div>
-            <Button size="sm" variant="primary" onClick={handleRunDoctor} disabled={runningDoctor}>
+            <Button size="sm" variant="primary" onClick={handleRunDoctor} disabled={runningDoctor} className="shrink-0">
               {runningDoctor ? (
                 <>
                   <Loader2 className="w-3.5 h-3.5 animate-spin" />
@@ -567,10 +600,6 @@ export function SettingsPage() {
               )}
             </Button>
           </div>
-
-          <p className="text-[12px] text-[#7A7A86]">
-            Executes a non-destructive 6-stage pipeline health check without mutating dispatch state.
-          </p>
 
           {!doctorReport ? (
             <div className="p-6 rounded-2xl bg-[#121215] border border-[#22222A] text-center text-[12px] text-[#7A7A86]">
@@ -592,9 +621,9 @@ export function SettingsPage() {
                 return (
                   <div
                     key={stage.stage}
-                    className="p-3.5 rounded-2xl bg-[#121215] border border-[#24242C] space-y-2"
+                    className="p-3.5 rounded-2xl bg-[#121215] border border-[#24242C] space-y-2 min-w-0 overflow-hidden"
                   >
-                    <div className="flex items-center justify-between gap-2">
+                    <div className="flex items-center justify-between gap-2 min-w-0">
                       <div className="flex items-center gap-2 min-w-0">
                         {passed ? (
                           <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
@@ -605,15 +634,23 @@ export function SettingsPage() {
                           {stage.stage}. {stage.name}
                         </span>
                       </div>
-                      <Badge variant={passed ? 'default' : 'muted'}>
+                      <Badge variant={passed ? 'default' : 'muted'} className="shrink-0">
                         {stage.status} &middot; {stage.latency_ms}ms
                       </Badge>
                     </div>
 
-                    <p className="text-[12px] text-[#A0A0AB]">{stage.summary}</p>
+                    <p
+                      title={stage.summary}
+                      className="text-[12px] text-[#A0A0AB] line-clamp-2 [overflow-wrap:anywhere]"
+                    >
+                      {stage.summary}
+                    </p>
 
                     {stage.detail && (
-                      <div className="px-3 py-2 rounded-xl bg-[#221618] border border-[#3E2428] text-[11px] text-[#FCA5A5] break-words">
+                      <div
+                        title={stage.detail}
+                        className="px-3 py-2 rounded-xl bg-[#221618] border border-[#3E2428] text-[11px] text-[#FCA5A5] [overflow-wrap:anywhere]"
+                      >
                         {stage.detail}
                       </div>
                     )}
