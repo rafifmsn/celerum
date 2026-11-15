@@ -18,7 +18,13 @@ Implement responsive navigation pills in the shared top bar component:
 ## 3. Page-Specific Implementation Nuances
 
 ### 3.1 Overview (`tmp/overview.html`)
-1. **Dynamic SVG Gauges & Waves**: Make the Conditional Poll Cache semi-circular arc (`stroke-dasharray` / arc endpoint) and the barcode progress strips reflect live percentages from `GET /api/overview`.
+1. **Dynamic Charts & Micro-Visualizations (Match Reference Image)**:
+   - **Wave + Vertical Comb Chart (`Shingle & Scrape Efficiency` and `Dispatch & Delivery Cadence`)**: Notice that `tmp/overview.html` approximated the bottom ticks with a flat `h-8` div, whereas the reference design clips vertical comb lines all the way up to the spline curve. Implement this as a reusable SVG component (either pure SVG + `d3-shape` `curveMonotoneX` or `shadcn/ui`'s `Recharts` `<AreaChart>`):
+     - Left of the active cursor (`x_now`): render the smooth spline `<path>` on top and close the area path to the baseline with `fill="url(#vertical-comb-pattern)"` (an SVG `<pattern width="5" height="100" patternUnits="userSpaceOnUse">` containing a `1px` vertical `<line>`), so every vertical stem automatically clips to the height of the curve.
+     - At `x_now`: render a crisp `1.5px` full-height vertical cursor `<line>`.
+     - Right of `x_now` (remaining window): render a short `8px`-tall baseline strip filled with the same vertical tick pattern.
+   - **Semi-Circular Arc Gauge (`Conditional Poll Cache`)**: Build as a pure SVG component converting `cache_hit_pct` (`0..100`) to `theta = Math.PI * (1 - pct / 100)` and computing `(cx + r * Math.cos(theta), cy - r * Math.sin(theta))` to position both the active `<path>` arc endpoint (with an SVG `<linearGradient>` fade along the arc) and the `<circle>` thumb indicator dot.
+   - **Barcode Progress Strips (`Processed Articles`, `Breaking Velocity Rate`, and `AI Synthesis Briefing`)**: Bind the left active segment width dynamically via `style={{ width: `${pct}%` }}` (leading solid block + gradient fill bar + right border cursor line) with the right `flex-1` remainder rendering the `repeating-linear-gradient` vertical ticks.
 2. **Window & Tier Filter Pills**: Clicking the Tier pill in the hero banner (`All Tiers`, `Tier 1`, `Tier 2`, `Tier 3`) filters the Overview metrics and Top Clusters.
 3. **Right-Panel Quick Actions**: Wire `Sources` (navigate to `/sources`), `Raw RSS` (navigate to `/raw-feed`), and `Flush Now` (`POST /api/dispatch/flush`).
 4. **Right-Panel Bottom Input & Send Button (Deferred Feature)**: Lines 585-597 of `tmp/overview.html` include a text input (`"Filter or inspect cluster..."`), a `+` button, and a `send` button. Because LLM tool-calling / SQL querying is **deferred**, wire the text input to filter the displayed cluster list client-side and mark the `+` / `send` buttons as disabled with a `"Interactive AI query coming soon"` tooltip.
