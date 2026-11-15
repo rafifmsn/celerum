@@ -21,6 +21,10 @@ data/
 *.db-wal
 *.db-shm
 
+# Frontend dependencies
+node_modules/
+web/node_modules/
+
 # IDE and OS
 .DS_Store
 .idea/

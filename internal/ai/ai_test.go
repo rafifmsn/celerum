@@ -145,6 +145,51 @@ func TestPromptConstruction(t *testing.T) {
 	}
 }
 
+func TestListModels_OpenAIAndOllama(t *testing.T) {
+	openAIServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/models" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		if r.Header.Get("Authorization") != "Bearer test-secret" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		_, _ = fmt.Fprint(w, `{"data":[{"id":"gpt-4o-mini"},{"id":"deepseek/deepseek-chat"}]}`)
+	}))
+	defer openAIServer.Close()
+
+	models, err := ListModels(context.Background(), "openai", openAIServer.URL, "test-secret")
+	if err != nil {
+		t.Fatalf("ListModels openai failed: %v", err)
+	}
+	if len(models) != 2 || models[0] != "deepseek/deepseek-chat" || models[1] != "gpt-4o-mini" {
+		t.Fatalf("unexpected openai models: %v", models)
+	}
+
+	if _, err := ListModels(context.Background(), "openrouter", openAIServer.URL, ""); err == nil {
+		t.Fatalf("expected error when non-ollama provider lacks api key")
+	}
+
+	ollamaServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/tags" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		_, _ = fmt.Fprint(w, `{"models":[{"name":"llama3.1:8b"},{"name":"qwen2.5:7b"}]}`)
+	}))
+	defer ollamaServer.Close()
+
+	ollamaModels, err := ListModels(context.Background(), "ollama", ollamaServer.URL+"/v1", "")
+	if err != nil {
+		t.Fatalf("ListModels ollama failed: %v", err)
+	}
+	if len(ollamaModels) != 2 || ollamaModels[0] != "llama3.1:8b" {
+		t.Fatalf("unexpected ollama models: %v", ollamaModels)
+	}
+}
+
+
 
 
 

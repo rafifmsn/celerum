@@ -106,4 +106,31 @@ func TestValidation_FirecrawlKey(t *testing.T) {
 	}
 }
 
+func TestValidation_JinaAndLLMKeys(t *testing.T) {
+	cfgJinaMissing := &Config{
+		Feeds:      []FeedConfig{{URL: "https://example.com/rss"}},
+		Enrichment: EnrichmentConfig{Scraper: "jina"},
+	}
+	if err := cfgJinaMissing.ValidateAndSetDefaults(); err == nil {
+		t.Errorf("expected error when jina scraper enabled without jina_api_key")
+	}
+
+	cfgLLMMissing := &Config{
+		Feeds: []FeedConfig{{URL: "https://example.com/rss"}},
+		LLM:   LLMConfig{Enabled: true, Provider: "openrouter"},
+	}
+	if err := cfgLLMMissing.ValidateAndSetDefaults(); err == nil {
+		t.Errorf("expected error when openrouter LLM enabled without api_key")
+	}
+
+	cfgOllama := &Config{
+		Feeds: []FeedConfig{{URL: "https://example.com/rss"}},
+		LLM:   LLMConfig{Enabled: true, Provider: "ollama", Model: "llama3.1"},
+	}
+	if err := cfgOllama.ValidateAndSetDefaults(); err != nil {
+		t.Errorf("expected ollama without api_key to pass, got: %v", err)
+	}
+}
+
+
 

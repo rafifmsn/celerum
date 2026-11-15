@@ -1,9 +1,13 @@
 package store
 
 import (
+	"fmt"
 	"path/filepath"
 	"testing"
 	"time"
+
+	"celerum/internal/config"
+	"celerum/pkg/model"
 )
 
 func TestStoreFeedStateAndDispatchedClusters(t *testing.T) {
@@ -101,4 +105,156 @@ func TestStoreWebhookRetries(t *testing.T) {
 		t.Errorf("expected 0 retries after delete, got %d", len(retries))
 	}
 }
+
+func TestStoreBootstrapSourcesArticlesClustersAndDualPrune(t *testing.T) {
+	tempDir := t.TempDir()
+	dbPath := filepath.Join(tempDir, "full.db")
+
+	st, err := New(dbPath)
+	if err != nil {
+		t.Fatalf("store.New failed: %v", err)
+	}
+	defer st.Close()
+
+	cfg := &config.Config{
+		Version: "1",
+		Engine: config.EngineConfig{
+			PollInterval:   "5m",
+			WindowDuration: "3h",
+			FlushInterval:  "1h",
+			TopK:           3,
+		},
+		Feeds: []config.FeedConfig{
+			{Name: "CoinDesk", URL: "https://coindesk.com/rss", Category: "Crypto", Tier: 1},
+			{Name: "Reuters", URL: "https://reuters.com/rss", Category: "Macro", Tier: 1},
+		},
+		Keywords: config.KeywordsConfig{Boost: []string{"etf", "fed"}},
+	}
+
+	bootstrapped, err := st.BootstrapConfig(cfg)
+	if err != nil {
+		t.Fatalf("BootstrapConfig failed: %v", err)
+	}
+	if len(bootstrapped.Feeds) != 2 {
+		t.Fatalf("expected 2 seeded sources, got %d", len(bootstrapped.Feeds))
+	}
+
+	now := time.Now().UTC()
+	var articles []model.Article
+	for i := 0; i < 12; i++ {
+		articles = append(articles, model.Article{
+			ID:          "art-" + string(rune('a'+i)),
+			FeedURL:     "https://coindesk.com/rss",
+			FeedName:    "CoinDesk",
+			FeedTier:    1,
+			Category:    "Crypto",
+			Title:       "Article headline " + string(rune('A'+i)),
+			Description: "Body",
+			URL:         "https://coindesk.com/" + string(rune('a'+i)),
+			ImageURL:    "https://coindesk.com/img.jpg",
+			PublishedAt: now.Add(-time.Duration(i) * time.Minute),
+			IngestedAt:  now,
+		})
+	}
+	inserted, err := st.UpsertArticles(articles)
+	if err != nil {
+		t.Fatalf("UpsertArticles failed: %v", err)
+	}
+	if inserted != 12 {
+		t.Fatalf("expected 12 inserted articles, got %d", inserted)
+	}
+
+	items, total, cats, srcs, err := st.QueryArticles("Crypto", "CoinDesk", "", 1, 5)
+	if err != nil {
+		t.Fatalf("QueryArticles failed: %v", err)
+	}
+	if total != 12 || len(items) != 5 || len(cats) != 1 || len(srcs) != 1 {
+		t.Fatalf("unexpected query result: total=%d len=%d cats=%v srcs=%v", total, len(items), cats, srcs)
+	}
+
+	// Test dual volume cap pruning (max 5 per feed, max 10 global)
+	if err := st.PruneWithLimits(7, 5, 10); err != nil {
+		t.Fatalf("PruneWithLimits failed: %v", err)
+	}
+	_, totalAfter, _, _, err := st.QueryArticles("", "", "", 1, 20)
+	if err != nil {
+		t.Fatalf("QueryArticles after prune failed: %v", err)
+	}
+	if totalAfter != 5 {
+		t.Fatalf("expected 5 articles remaining after per-feed cap 5, got %d", totalAfter)
+	}
+}
+
+func TestLegacyRuntimeSettingsMigration(t *testing.T) {
+	st, err := New(filepath.Join(t.TempDir(), "legacy.db"))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer st.Close()
+
+	legacyJSON := `{"engine":{"WindowDuration":"24h"},"enrichment":{"Scraper":"firecrawl","FirecrawlAPIKey":"fc-legacy"},"llm":{"Enabled":true,"Provider":"openrouter","APIKey":"sk-legacy"},"dispatch":{"Telegram":{"Enabled":true,"BotToken":"bot-legacy","ChatID":"123"}}}`
+	if _, err := st.db.Exec(`INSERT INTO settings (key, value_json, updated_at) VALUES ('runtime_config', ?, 1);`, legacyJSON); err != nil {
+		t.Fatalf("seed legacy settings: %v", err)
+	}
+
+	rt, err := st.LoadRuntimeSettings()
+	if err != nil {
+		t.Fatalf("LoadRuntimeSettings: %v", err)
+	}
+	if rt.Engine.WindowDuration != "24h" || rt.Enrichment.FirecrawlAPIKey != "fc-legacy" || rt.LLM.APIKey != "sk-legacy" || rt.Dispatch.Telegram.BotToken != "bot-legacy" {
+		t.Fatalf("expected legacy keys preserved, got %+v", rt)
+	}
+}
+
+func TestDispatchedClustersPagination(t *testing.T) {
+	st, err := New(filepath.Join(t.TempDir(), "dispatch_page.db"))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer st.Close()
+
+	now := time.Now().UTC()
+	var recs []ClusterRecord
+	for i := 0; i < 5; i++ {
+		recs = append(recs, ClusterRecord{
+			ClusterHash:      fmt.Sprintf("hash-%d", i),
+			RepresentativeID: fmt.Sprintf("rep-%d", i),
+			Title:            fmt.Sprintf("Dispatched headline %d", i),
+			Score:            10.0 + float64(i),
+			Tier:             1,
+			SourceCount:      2,
+			LeadSource:       "CoinDesk",
+			Status:           "dispatched",
+			DispatchMode:     "breaking",
+			CreatedAt:        now,
+			UpdatedAt:        now.Add(time.Duration(i) * time.Minute),
+			DispatchedAt:     now.Add(time.Duration(i) * time.Minute),
+		})
+	}
+	if err := st.UpsertActiveClusters(recs); err != nil {
+		t.Fatalf("UpsertActiveClusters: %v", err)
+	}
+	for _, r := range recs {
+		if err := st.MarkClusterDispatchedFull(r.ClusterHash, r.Summary, r.Enriched, r.DispatchMode, "Telegram", r.ScraperUsed, r.DispatchedAt); err != nil {
+			t.Fatalf("MarkClusterDispatchedFull: %v", err)
+		}
+	}
+
+	page1, total, err := st.QueryDispatchedClustersPage("", 1, 2)
+	if err != nil {
+		t.Fatalf("QueryDispatchedClustersPage page 1: %v", err)
+	}
+	if total != 5 || len(page1) != 2 {
+		t.Fatalf("expected total=5 len=2 on page 1, got total=%d len=%d", total, len(page1))
+	}
+
+	page3, _, err := st.QueryDispatchedClustersPage("", 3, 2)
+	if err != nil {
+		t.Fatalf("QueryDispatchedClustersPage page 3: %v", err)
+	}
+	if len(page3) != 1 {
+		t.Fatalf("expected 1 row on page 3, got %d", len(page3))
+	}
+}
+
 

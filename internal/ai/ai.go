@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -27,23 +28,122 @@ type Client struct {
 	customPrompt string
 }
 
-// NewSummarizer creates an LLM summarizer based on config.
-func NewSummarizer(cfg *config.Config) Summarizer {
-	baseURL := strings.TrimRight(cfg.LLM.BaseURL, "/")
-	if baseURL == "" {
-		switch strings.ToLower(cfg.LLM.Provider) {
-		case "openrouter":
-			baseURL = "https://openrouter.ai/api/v1"
-		case "deepseek":
-			baseURL = "https://api.deepseek.com/v1"
-		case "groq":
-			baseURL = "https://api.groq.com/openai/v1"
-		case "ollama":
-			baseURL = "http://localhost:11434/v1"
-		default:
-			baseURL = "https://api.openai.com/v1"
+// ResolveBaseURL returns the effective OpenAI-compatible API base URL for a provider.
+func ResolveBaseURL(provider, baseURL string) string {
+	trimmed := strings.TrimRight(strings.TrimSpace(baseURL), "/")
+	if trimmed != "" {
+		return trimmed
+	}
+	switch strings.ToLower(strings.TrimSpace(provider)) {
+	case "openrouter":
+		return "https://openrouter.ai/api/v1"
+	case "deepseek":
+		return "https://api.deepseek.com/v1"
+	case "groq":
+		return "https://api.groq.com/openai/v1"
+	case "ollama":
+		return "http://localhost:11434/v1"
+	default:
+		return "https://api.openai.com/v1"
+	}
+}
+
+// ListModels queries the provider's model catalog (/v1/models or Ollama /api/tags).
+func ListModels(ctx context.Context, provider, baseURL, apiKey string) ([]string, error) {
+	prov := strings.ToLower(strings.TrimSpace(provider))
+	if prov == "" {
+		prov = "openai"
+	}
+	if prov != "ollama" && strings.TrimSpace(apiKey) == "" {
+		return nil, fmt.Errorf("api_key is required to fetch models for provider %q", prov)
+	}
+
+	resolved := ResolveBaseURL(prov, baseURL)
+	client := &http.Client{Timeout: 15 * time.Second}
+
+	if prov == "ollama" {
+		ollamaRoot := strings.TrimSuffix(resolved, "/v1")
+		endpoint := ollamaRoot + "/api/tags"
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+		if err != nil {
+			return nil, fmt.Errorf("creating ollama tags request: %w", err)
+		}
+		resp, err := client.Do(req)
+		if err != nil {
+			return nil, fmt.Errorf("querying ollama %s: %w", endpoint, err)
+		}
+		defer resp.Body.Close()
+
+		body, err := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+		if err != nil {
+			return nil, err
+		}
+		if resp.StatusCode != http.StatusOK {
+			return nil, fmt.Errorf("ollama returned status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+		}
+		var parsed struct {
+			Models []struct {
+				Name string `json:"name"`
+			} `json:"models"`
+		}
+		if err := json.Unmarshal(body, &parsed); err != nil {
+			return nil, fmt.Errorf("decoding ollama tags: %w", err)
+		}
+		models := make([]string, 0, len(parsed.Models))
+		for _, m := range parsed.Models {
+			if strings.TrimSpace(m.Name) != "" {
+				models = append(models, m.Name)
+			}
+		}
+		sort.Strings(models)
+		return models, nil
+	}
+
+	endpoint := resolved + "/models"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, fmt.Errorf("creating models request: %w", err)
+	}
+	if strings.TrimSpace(apiKey) != "" {
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("querying %s: %w", endpoint, err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("models endpoint returned status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+
+	var parsed struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		return nil, fmt.Errorf("decoding models response: %w", err)
+	}
+
+	models := make([]string, 0, len(parsed.Data))
+	for _, m := range parsed.Data {
+		if strings.TrimSpace(m.ID) != "" {
+			models = append(models, m.ID)
 		}
 	}
+	sort.Strings(models)
+	return models, nil
+}
+
+// NewSummarizer creates an LLM summarizer based on config.
+func NewSummarizer(cfg *config.Config) Summarizer {
+	baseURL := ResolveBaseURL(cfg.LLM.Provider, cfg.LLM.BaseURL)
 
 	modelName := cfg.LLM.Model
 	if modelName == "" {

@@ -105,13 +105,66 @@ func TestClusterArticles(t *testing.T) {
 	}
 }
 
-func BenchmarkJaccard(b *testing.B) {
-	shinglesA := []uint64{10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120, 130, 140, 150}
-	shinglesB := []uint64{20, 40, 60, 80, 100, 120, 140, 160, 180, 200, 220, 240, 260, 280, 300}
+func TestBoundedLinkagePreventsChaining(t *testing.T) {
+	now := time.Now()
+	// A shares crypto ETF terms with B, B shares SEC court terms with C,
+	// but A and C are unrelated topics and must not chain into one mega-cluster.
+	articles := []model.Article{
+		{
+			ID:          "A",
+			Title:       "BlackRock spot Bitcoin ETF attracts massive institutional inflows",
+			Description: "Bitcoin ETF liquidity surges across Wall Street desks.",
+			PublishedAt: now,
+		},
+		{
+			ID:          "B",
+			Title:       "BlackRock spot Bitcoin ETF faces SEC regulatory deadline review",
+			Description: "SEC enforcement attorneys review compliance filings and court precedent.",
+			PublishedAt: now,
+		},
+		{
+			ID:          "C",
+			Title:       "SEC enforcement attorneys file court precedent against biotech insider",
+			Description: "Regulatory compliance filing targets insider pharmaceutical trading.",
+			PublishedAt: now,
+		},
+	}
+
+	groups, stats := ClusterArticlesWithStats(articles, 0.25)
+	if stats.TotalPossiblePairs != 3 {
+		t.Errorf("expected 3 total possible pairs, got %d", stats.TotalPossiblePairs)
+	}
+	for _, g := range groups {
+		if len(g) == 3 {
+			t.Fatalf("expected bounded linkage to prevent A-B-C chaining into single cluster of 3")
+		}
+	}
+}
+
+func TestFilterClusterableArticles(t *testing.T) {
+	articles := []model.Article{
+		{ID: "short", Title: "FLASH: BTC up", Description: ""},
+		{ID: "valid", Title: "Federal Reserve cuts interest rates by 50 basis points", Description: ""},
+	}
+	filtered := FilterClusterableArticles(articles, 4)
+	if len(filtered) != 1 || filtered[0].ID != "valid" {
+		t.Fatalf("expected only 'valid' article to pass 4-token filter, got %+v", filtered)
+	}
+}
+
+func BenchmarkCosineDot(b *testing.B) {
+	vecA := normalizeVec(sparseVec{
+		"blackrock": 2.4, "bitcoin": 1.9, "etf": 2.1, "inflow": 2.6, "billion": 1.8,
+		"institution": 1.5, "market": 1.2, "surge": 1.4, "spot": 1.6, "sec": 2.0,
+	})
+	vecB := normalizeVec(sparseVec{
+		"blackrock": 2.4, "bitcoin": 1.9, "etf": 2.1, "record": 1.7, "daily": 1.3,
+		"investor": 1.5, "market": 1.2, "rally": 1.4, "spot": 1.6, "fund": 1.1,
+	})
 
 	b.ReportAllocs()
 	for b.Loop() {
-		_ = Jaccard(shinglesA, shinglesB)
+		_ = dotVec(vecA, vecB)
 	}
 }
 

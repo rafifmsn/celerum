@@ -1,162 +1,163 @@
 # Celerum Architecture & Technical Specification
 
-## 1. Design Principles
-
-Celerum is designed around algorithmic efficiency, protocol compliance, and deterministic execution.
-Instead of relying on vector databases or brute-force LLM ingestion, Celerum uses RFC 7232 HTTP conditional requests, set-theoretic similarity metrics, and Disjoint-Set Union clustering.
-The system operates as a zero-CGO single binary designed to run continuously on low-resource environments with minimal memory and network overhead.
-
-## 2. Ingestion Engine: RFC 7232 Conditional Polling
-
-Polling dozens of RSS feeds on frequent intervals risks excessive CPU and network overhead.
-Celerum enforces HTTP conditional caching standards:
-
 ```mermaid
 sequenceDiagram
     autonumber
-    participant E as Celerum Engine
-    participant S as SQLite (feed_state)
-    participant P as Publisher Server
+    participant S as SQLite (Store)
+    participant E as Engine
+    participant P as Publisher Feeds
+    participant A as Scraper & LLM
+    participant D as Dispatchers
+    participant U as HTTP / SSE Server
 
-    E->>S: Query ETag & Last-Modified for feed URL
-    S-->>E: Return cached cursor (ETag / timestamp)
-
-    alt Unmodified Feed (Sub-50ms)
-        E->>P: GET /rss (If-None-Match, If-Modified-Since)
-        P-->>E: 304 Not Modified (empty body)
-        Note over E,P: Zero network bandwidth consumed
-    else New Articles Available
-        E->>P: GET /rss (If-None-Match, If-Modified-Since)
-        P-->>E: 200 OK (XML body + new headers)
-        E->>S: Store updated ETag & Last-Modified
-        E->>E: Parse XML, prune noise, append to ring buffer
+    E->>S: Load sources, settings, and feed cursors
+    loop Due Feeds (next_poll_at <= now)
+        E->>P: GET /rss via uTLS (If-None-Match, If-Modified-Since)
+        alt 304 Not Modified
+            P-->>E: 304 + Retry-After / Cache-Control
+            E->>S: Update telemetry and exponential next_poll_at
+        else 200 OK
+            P-->>E: XML body
+            E->>S: Persist articles, cursors, and reset consecutive_304
+        end
     end
+    E->>E: FilterClusterableArticles -> ClusterArticlesWithStats -> ScoreCluster
+    E->>S: Upsert active clusters & check dispatched_clusters
+    alt Score >= breaking_threshold or Flush Due
+        E->>A: Concurrent scrape (<=3) + /chat/completions (fallback on err)
+        E->>D: Deliver to Telegram / HTTP Webhook
+        E->>S: Record dispatched_clusters (or queue webhook_retries)
+    end
+    E-->>U: Broadcast SSE EngineEvent (/api/events)
 ```
 
-- **ETag and Last-Modified Tracking:**
-  Feed states are stored in an embedded SQLite table (`feed_state`).
-  Requests include `If-None-Match` and `If-Modified-Since` headers.
-  Unmodified feeds return `304 Not Modified` with empty response bodies, completing in sub-50ms with zero payload overhead.
+## 1. Design Principles
 
-- **Feed Starvation and Low-Information Pruning:**
-  High-frequency feeds can flood ingestion buffers and starve slow-moving high-signal feeds.
-  Celerum prunes entries with titles shorter than 25 characters, removes identical title and description pairs, and applies per-feed ring buffer caps (keeping only the newest $M$ entries).
+Celerum is built as a single zero-CGO Go binary combining scheduled RSS/Atom ingestion, deterministic clustering, hybrid alerting, and an embedded React SPA served over standard `net/http`.
+Rather than depending on vector databases or embedding APIs, the pipeline keeps similarity and scoring deterministic, self-contained in memory, and persisted in SQLite (`modernc.org/sqlite` in WAL mode).
 
-## 3. Algorithmic Deduplication and Event Clustering
+## 2. Ingestion & Adaptive Polling (`internal/feed`, `internal/engine`)
 
-Breaking news coverage shares distinctive lexical tokens (proper nouns, figures, tickers) across reporting outlets.
-Celerum uses set-theoretic similarity without floating-point neural embeddings.
+Polling high-frequency publishers uniformly wastes bandwidth and invites rate limits.
+Celerum implements conditional caching paired with browser-aligned TLS transport and per-feed adaptive intervals:
+
+- **uTLS Transport (`utlsRoundTripper`):**
+  HTTPS requests use `utls.HelloChrome_Auto` with ALPN negotiation (`h2` and `http/1.1`) and Chrome-aligned headers to improve compatibility with CDN-fronted syndication endpoints.
+- **RFC 7232 Conditional Requests:**
+  Feed polling cursors (`etag`, `last_modified`) persist in the SQLite `sources` table via `Store.UpdateSourcePollTelemetry`.
+  Conditional `If-None-Match` and `If-Modified-Since` headers trigger `304 Not Modified` responses with zero XML body transfer when feeds have not changed.
+- **Adaptive Per-Feed Backoff (`computeAdaptiveDelay`, `ParseRetryAndCacheHeaders`):**
+  Feeds returning `304` or HTTP errors increment `consecutive_304` and back off by `1.5^consecutive_304` times `poll_interval` (capped at `30m`), while honoring explicit `Retry-After` or `Cache-Control: max-age` response headers and applying 10 percent jitter.
+  When new articles arrive, `consecutive_304` resets to `0`.
+- **Raw Feed Preservation (`FilterAndCap`):**
+  Only empty titles and URLs matching `keywords.blocklist` are excluded at ingest, capped at `max_articles_per_feed` items per poll cycle.
+  Short breaking headlines remain persisted in SQLite for the Raw Feed UI even if they are filtered out downstream during clustering.
+
+## 3. Shingle Pruning & Bounded TF-IDF Clustering (`internal/cluster`)
+
+Multi-source news clustering uses lexical shingling, inverted-index pruning, and bounded agglomerative merging in `ClusterArticlesWithStats`:
 
 ```mermaid
 flowchart LR
-    A["Raw RSS Item"] --> B["Clean & Stem\n(Strip HTML, lowercase)"]
-    B --> C["64-bit FNV-1a\nSorted Shingle Hashes"]
-    C --> D["Inverted Index\n(Candidate Filter)"]
-    D --> E["Two-Pointer Scan\n(Allocation-Free Jaccard)"]
-    E --> F{"J(A, B) >= tau?"}
-    F -->|Yes| G["Union-Find Merge\n(Path Compression)"]
-    F -->|No| H["Separate Clusters"]
+    A["Active Window Articles"] --> B["FilterClusterableArticles\n(>= 4 tokens)"]
+    B --> C["Tokenize & Stem\n(64-bit FNV-1a Shingles)"]
+    C --> D["Inverted Shingle Index\n(>= 2 shared shingles)"]
+    D --> E["BM25 / TF-IDF Cosine\n(Title weighted 2x)"]
+    E --> F["Greedy Merge + Guards\n(Centroid & Complete-Linkage)"]
 ```
 
-### Text Normalization and Shingling
+1. **Pre-Filter & Normalization:**
+   `FilterClusterableArticles` excludes ultra-short items with fewer than 4 non-stopword tokens before clustering.
+   Remaining headlines and the first 25 description tokens are stripped of HTML/URLs, lowercased, stripped of stop-words, and suffix-stemmed (`Stem`).
+   Title and combined token sequences produce sorted 64-bit FNV-1a unigram/bigram `ShingleHashes`.
+2. **Inverted Index Candidate Pruning:**
+   An inverted shingle map links each hash to matching document indices.
+   Only pairs sharing at least 2 shingles proceed to cosine evaluation, avoiding $O(N^2)$ full scoring.
+3. **Local BM25 / TF-IDF Cosine Similarity:**
+   Each document builds smoothed IDF weights $1 + \ln((N + 1) / (\text{df} + 1))$ and BM25 term-frequency scaling with $k_1 = 1.2$, weighting title terms `2.0x` relative to description terms `1.0x` and L2-normalizing sparse vectors.
+   Candidate similarity evaluates `max(combinedCosine, titleCosine * 0.92)` against `similarity_threshold` (default `0.28`).
+4. **Bounded Agglomerative Union-Find:**
+   Qualifying pairs are sorted descending by similarity and merged via `DisjointSet` only when combined cluster size stays within `50` items, cluster centroid cosine meets `0.85 * threshold`, and all cross-cluster member pairs meet a complete-linkage floor of `0.60 * threshold`.
+   This prevents transitive `A-B-C` chaining into unrelated mega-clusters.
 
-1. Raw HTML tags and URLs are stripped.
-2. Text is converted to lowercase and stemmed for common inflections (such as plurals and verb endings).
-3. Common English stop-words are eliminated.
-4. Word tokens are hashed into 64-bit unsigned integers using FNV-1a.
-5. Documents maintain sorted slices of unique `uint64` hashes.
+## 4. Inverted Tier Velocity Scoring (`internal/score`)
 
-### Inverted Index Candidate Generation
+`Scorer.ScoreCluster` evaluates corroboration breadth, inverted publisher authority, keyword boosts, and exponential decay:
 
-To avoid $O(N^2)$ exhaustive pairwise comparisons, Celerum maintains an in-memory inverted index mapping shingle hashes to document IDs.
-Documents sharing fewer than 2 shingles are bypassed entirely, cutting pairwise comparison volume by over 80 percent.
+$$S(C_k) = \left( |U_k| \cdot w_{\text{size}} + \sum_{u \in U_k} \text{TierWeight}(\text{tier}_u) + K_k \cdot w_{\text{kw}} \right) \cdot 0.5^{\Delta t / H}$$
 
-### Allocation-Free Jaccard Scanning
-
-For candidate pairs, similarity is evaluated using a two-pointer scan across sorted `[]uint64` slices:
-
-$$J(A, B) = \frac{|A \cap B|}{|A \cup B|}$$
-
-This scan runs in linear time relative to token slice length with zero heap allocations.
-
-### Disjoint-Set Union (Union-Find)
-
-When candidate similarity exceeds the threshold $\tau$, items are merged into a disjoint set with path compression and rank optimization.
-Duplicate reports across outlets collapse into unified event clusters $C_k$ in near-linear time $O(N \cdot \alpha(N))$.
-
-## 4. Heuristic Velocity Scoring
-
-Coverage density across multiple independent sources serves as the primary heuristic signal for breaking developments:
-
-$$S(C_k) = w_1 \cdot |C_k| + w_2 \sum_{i \in C_k} \text{Tier}(source_i) + w_3 \cdot \text{KeywordBonus} - \lambda \Delta t$$
-
-- **Cluster Size ($|C_k|$):** Quantifies multi-source verification velocity ($w_1 = 3.0$).
-- **Source Tier Weight:** Multiplier favoring primary wire sources ($w_2 = 1.5$).
-- **Keyword Bonus:** Boost for high-impact market terms ($w_3 = 2.0$).
-- **Time Decay ($\lambda \Delta t$):** Linear penalty favoring fresh events over older coverage ($\lambda = 0.5$).
+- **Unique Sources ($|U_k|$):** Counts distinct feed URLs or feed names in the cluster rather than duplicate articles from the same outlet (`WeightClusterSize = 3.0`).
+- **Inverted Tier Authority (`TierWeight`):** Scales each unique source's best tier with `WeightTier = 1.5`: Tier 1 wires contribute $3.0 \times 1.5 = 4.5$, Tier 2 contributes $2.0 \times 1.5 = 3.0$, and Tier 3+ contributes $1.0 \times 1.5 = 1.5$.
+- **Word-Boundary Keyword Bonus ($K_k \cdot w_{\text{kw}}$):** Counts boost keywords or multi-word phrases matched cleanly at token boundaries (`WeightKeyword = 2.0`).
+- **Exponential Half-Life Decay ($H = 2.0\text{h}$):** Uses `HalfLifeHours = 2.0` measured from the newest article timestamp in the cluster ($\Delta t$ in hours).
 
 ### Calculation Example
 
-Consider a breaking event reported concurrently by two Tier-1 outlets (e.g. CoinDesk and Bloomberg) matching two keywords (`etf` and `sec`) 10 minutes after initial publication:
+Suppose two distinct Tier-1 outlets (e.g. CoinDesk and Bloomberg) report an `etf` / `sec` story 10 minutes ($\Delta t \approx 0.1667\text{h}$) before evaluation:
 
-- **Cluster Size:** $|C_k| = 2 \implies 2 \times 3.0 = 6.0$
-- **Source Tiers:** Tier 1 for both feeds $\implies (1 \times 1.5) + (1 \times 1.5) = 3.0$
-- **Keyword Matches:** Matches `etf` and `sec` $\implies 2 \times 2.0 = 4.0$
-- **Time Decay:** $10 \text{ minutes} = 0.167 \text{ hours} \implies 0.167 \times 0.5 \approx 0.08$
+- **Unique Sources:** $|U_k| = 2 \implies 2 \times 3.0 = 6.0$
+- **Inverted Tiers:** $2 \times \text{TierWeight}(1) = 2 \times 4.5 = 9.0$
+- **Keywords (`etf`, `sec`):** $2 \times 2.0 = 4.0$
+- **Exponential Decay:** $0.5^{0.1667 / 2.0} \approx 0.9439$
 
-$$S(C_k) = 6.0 + 3.0 + 4.0 - 0.08 = 12.92$$
+$$S(C_k) = (6.0 + 9.0 + 4.0) \times 0.9439 \approx 17.93$$
 
-Because $S(C_k) = 12.92 \ge \tau_{\text{break}}$ (12.0), the cluster crosses the breaking threshold and triggers an immediate push alert without waiting for the 1-hour digest.
+Because $17.93 \ge 12.0$ (`breaking_threshold`), the cluster triggers an immediate breaking dispatch instead of waiting for `flush_interval`.
 
-## 5. Hybrid Dispatch Cadence
+## 5. SQLite Persistence & Dual Pruning (`internal/store`)
 
-Celerum avoids both the latency of rigid batch windows and the silence of threshold-only alerts through a hybrid dual-cadence dispatch mechanism:
+SQLite serves as the single runtime source of truth for both pipeline state and UI management:
 
-| Trigger Mechanism             | Condition                                      | Dispatch Action                                         | Deduplication                                        |
-| :---------------------------- | :--------------------------------------------- | :------------------------------------------------------ | :--------------------------------------------------- |
-| **Immediate Breaking Alert**  | Cluster score $S(C_k) \ge \tau_{\text{break}}$ | Immediate push to Telegram and webhooks                 | Dispatches once; SHA-256 fingerprint saved to SQLite |
-| **Periodic Heartbeat Digest** | 1-hour flush timer expires                     | Dispatches top-K undispatched clusters in active window | Skips clusters already alerted during the window     |
+- **Configuration & Feeds:**
+  `sources` stores enabled/disabled feeds, tiers, categories, ETags, and live poll telemetry (`last_status`, `last_latency_ms`, `next_poll_at`, `consecutive_304`, `last_error`).
+  `settings` stores JSON runtime settings (`engine`, `keywords`, `enrichment`, `llm`, `dispatch`) bootstrapped from YAML when empty via `BootstrapConfig`.
+- **Content & Delivery State:** `articles` persists ingested items indexed for paginated querying (`QueryArticles`), `clusters` tracks active/buffered/dispatched event groups, `dispatched_clusters` records SHA-256 cluster hashes (`ComputeClusterHash`) with summary metadata (`QueryDispatchedClustersPage`), and `webhook_retries` queues failed deliveries.
+- **Dual Time + Cap Retention (`PruneWithLimits`):** Background cleanup removes records older than `7` days while enforcing per-feed (`500` rows) and global (`10000` rows) article caps to keep SQLite queries fast on unbounded deployments.
 
-### Decision Flow
+## 6. Hybrid Dispatch Cadence & Failure Recovery
 
-1. **Score Evaluation:** Each polling cycle evaluates newly formed or updated clusters $C_k$ against the velocity threshold $\tau_{\text{break}}$.
-2. **Immediate Path:** If $S(C_k) \ge \tau_{\text{break}}$, Celerum checks SQLite table `dispatched_clusters`. If not previously dispatched, the cluster is immediately synthesized and alerted.
-3. **Heartbeat Path:** Clusters below the threshold remain in the 3-hour sliding window buffer. When the 1-hour flush ticker fires, Celerum ranks remaining undispatched clusters and flushes the top-K as a periodic digest.
-4. **Deduplication:** Dispatched cluster fingerprints persist in SQLite with automatic 7-day TTL cleanup, preventing repeated alerts for identical event coverage across cycles.
+Celerum pairs immediate alerts for high-velocity stories with periodic top-K digests:
 
-## 6. Failure Recovery and External Service Fallbacks
+| Trigger Path | Condition | Dispatch Behavior | Persistence |
+| :--- | :--- | :--- | :--- |
+| **Breaking Alert** | `score >= breaking_threshold` | Dispatches immediately during evaluation | `dispatched_clusters` row marked `breaking` |
+| **Scheduled / Manual Flush** | `flush_interval` elapses or `/api/dispatch/flush` | Dispatches top-K undispatched buffered clusters | Marked `heartbeat` or `manual` |
 
-- **Multi-Source Scraping:**
-  Celerum identifies up to the top 3 articles in a cluster and fetches their full text concurrently via goroutines within a 10-second timeout.
-  Scraped texts are structured as numbered source blocks to provide multi-perspective context to the LLM.
-  If scraping fails or is disabled, Celerum falls back immediately to the existing RSS descriptions.
-- **LLM Summarization Outage:**
-  Capped at 30 seconds with retry.
-  If unreachable or rate-limited, Celerum dispatches verified source links with `enriched: false`.
-  Downstream platforms like Telegram cleanly unfurl the native OpenGraph link preview card.
-  Breaking news is never delayed or dropped due to AI provider downtime.
-- **Webhook Retry Queue:**
-  Delivery failures write to SQLite table `webhook_retries`.
-  A background worker retries pending items with exponential backoff up to 5 attempts.
+- **Enrichment & Constrained Scraping (`internal/enrich`):**
+  When LLM synthesis is enabled and `enrichment.scraper` is set (`direct`, `jina`, or `firecrawl`), up to 3 articles per cluster are scraped concurrently with a 15-second timeout and combined into numbered source blocks.
+  API keys for `jina`, `firecrawl`, and non-`ollama` LLM providers are strictly validated on save and in `doctor`.
+- **LLM Timeout & Graceful Degradation (`internal/ai`):**
+  Requests call OpenAI-compatible `/chat/completions` endpoints with a 30-second timeout.
+  If scraping or summarization fails at runtime, `buildPayloadWithMeta` falls back cleanly with `enriched: false` so verified RSS links still dispatch without delay.
+- **Retry Queue (`ProcessRetries`):**
+  Failed Telegram or HTTP webhook deliveries write to `webhook_retries` and retry once per minute with exponential backoff ($2^{\text{attempts}}$ minutes) up to 5 attempts, with manual retry and delete controls in the web UI.
 
-## 7. Standardized Payload and Dispatch Layout
+## 7. Web Server, REST API & SSE (`internal/server`, `web/`)
 
-Dispatched event alerts adhere to a deterministic JSON payload schema:
+`Server` serves the compiled React SPA embedded from `web/dist` (`web.DistFS`) alongside JSON REST and Server-Sent Events endpoints on `-addr` (default `:8080`):
+
+- **Telemetry & Feed Inspection:** `GET /api/overview` (returns live telemetry charts, cluster windows, and engine stats), `GET /api/clusters`, and `GET /api/articles` (cursor/offset pagination and feed filtering).
+- **Source & Config Management:** CRUD routes on `/api/sources`, YAML import/export on `/api/config/yaml`, live hot-reloaded settings on `/api/settings` (`Engine.UpdateConfig`), model discovery on `POST /api/models/discover`, and non-destructive 6-stage pipeline verification on `POST /api/doctor`.
+- **Dispatch & Realtime Events:** `GET /api/dispatch` (queue + paginated history), `POST /api/dispatch/flush`, `POST /api/dispatch/retries/{id}/retry`, `DELETE /api/dispatch/retries/{id}`, and `GET /api/events` SSE streaming `EngineEvent` updates (`poll_completed`, `dispatch_updated`, `settings_updated`, `sources_updated`).
+
+## 8. Standardized Payload & Telegram Formatting
+
+Webhook payloads follow a uniform JSON schema (`model.Payload` in `pkg/model`):
 
 ```json
 {
-  "id": "cluster-uuid",
+  "id": "sha256-cluster-hash",
   "feed_name": "CoinDesk",
   "title": "Representative Headline",
   "content": "Synthesized narrative briefing",
   "enriched": true,
   "cluster_size": 2,
-  "score": 14.5,
+  "score": 17.93,
   "sources": [
     {
       "name": "CoinDesk",
       "tier": 1,
-      "url": "https://coindesk.com/...",
+      "url": "https://www.coindesk.com/...",
       "title": "Headline 1",
       "published_at": 1789139040
     }
@@ -165,15 +166,5 @@ Dispatched event alerts adhere to a deterministic JSON payload schema:
 }
 ```
 
-### Telegram Alert Formatting
-
-- **Enriched Mode (`enriched: true`):**
-  Begins with a bold `<b>AI Summary - {Unique Publishers}</b>` header.
-  Follows with the pure narrative synthesis body.
-  Concludes with a `<b>Coverage:</b>` section containing newline-separated article links without bullet points.
-- **Fallback Mode (`enriched: false`):**
-  Omits the AI Summary header.
-  Leads directly with `<b>Coverage:</b>` and newline-separated source links.
-  Telegram automatically unfurls the native link preview for the primary source URL.
-- **Source Timestamp Format:**
-  Each source link is appended with a compact UTC timestamp formatted as `(Day Mon HH:MM UTC)` without the year, such as `(11 Sep 15:04 UTC)`.
+In `dispatch.FormatTelegramMessage`, enriched payloads render a bold `<b>AI Summary - {Unique Publishers}</b>` header, the narrative body, and a newline-separated `<b>Coverage:</b>` link list with `(Day Mon HH:MM UTC)` timestamps.
+Fallback payloads (`enriched: false`) omit the AI Summary header and lead with `<b>Coverage:</b>` so Telegram unfurls the lead source preview card natively.

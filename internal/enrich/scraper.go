@@ -33,6 +33,9 @@ type JinaScraper struct {
 }
 
 func (s *JinaScraper) FetchContent(ctx context.Context, targetURL string) (string, error) {
+	if strings.TrimSpace(s.apiKey) == "" {
+		return "", fmt.Errorf("jina scraper requires a non-empty jina_api_key")
+	}
 	readerURL := fmt.Sprintf("https://r.jina.ai/%s", targetURL)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, readerURL, nil)
 	if err != nil {
@@ -126,6 +129,9 @@ type firecrawlResponse struct {
 }
 
 func (s *FirecrawlScraper) FetchContent(ctx context.Context, targetURL string) (string, error) {
+	if strings.TrimSpace(s.apiKey) == "" {
+		return "", fmt.Errorf("firecrawl scraper requires a non-empty firecrawl_api_key")
+	}
 	reqBody, err := json.Marshal(firecrawlRequest{
 		URL:     targetURL,
 		Formats: []string{"markdown"},
