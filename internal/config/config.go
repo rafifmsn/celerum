@@ -46,9 +46,16 @@ type EngineConfig struct {
 
 // FeedConfig defines an RSS or Atom source.
 type FeedConfig struct {
-	Name string `yaml:"name"`
-	URL  string `yaml:"url"`
-	Tier int    `yaml:"tier"`
+	Name     string `yaml:"name" json:"name"`
+	URL      string `yaml:"url" json:"url"`
+	Category string `yaml:"category,omitempty" json:"category"`
+	Tier     int    `yaml:"tier" json:"tier"`
+	Enabled  *bool  `yaml:"enabled,omitempty" json:"enabled,omitempty"`
+}
+
+// IsEnabled reports whether the feed is active (defaults to true if unset).
+func (f FeedConfig) IsEnabled() bool {
+	return f.Enabled == nil || *f.Enabled
 }
 
 // KeywordsConfig contains boost and blocklist terms.
@@ -180,6 +187,60 @@ func Load(path string) (*Config, error) {
 	return &cfg, nil
 }
 
+// ParseYAML parses a YAML config document with environment variable expansion.
+func ParseYAML(raw []byte) (*Config, error) {
+	expanded := expandEnv(raw)
+	var cfg Config
+	if err := yaml.Unmarshal(expanded, &cfg); err != nil {
+		return nil, fmt.Errorf("parsing YAML config: %w", err)
+	}
+	if err := cfg.ValidateAndSetDefaults(); err != nil {
+		return nil, fmt.Errorf("invalid configuration: %w", err)
+	}
+	return &cfg, nil
+}
+
+// ExportYAML marshals a Config into YAML bytes.
+func ExportYAML(cfg *Config) ([]byte, error) {
+	if cfg == nil {
+		return nil, fmt.Errorf("cannot export nil config")
+	}
+	if cfg.Version == "" {
+		cfg.Version = "1"
+	}
+	return yaml.Marshal(cfg)
+}
+
+// DefaultConfig returns a sensible default runtime configuration when no YAML file is present.
+func DefaultConfig() *Config {
+	cfg := &Config{
+		Version:  "1",
+		Database: DatabaseConfig{Path: "data/celerum.db"},
+		Engine: EngineConfig{
+			PollInterval:        "5m",
+			WindowDuration:      "3h",
+			FlushInterval:       "1h",
+			MaxArticlesPerFeed:  20,
+			SimilarityThreshold: 0.28,
+			BreakingThreshold:   12.0,
+			TopK:                5,
+		},
+		Keywords: KeywordsConfig{
+			Boost:     []string{"etf", "sec", "fed", "ath", "acquisition"},
+			Blocklist: []string{"/sponsored/", "/press-releases/"},
+		},
+		Enrichment: EnrichmentConfig{Scraper: "none"},
+		LLM: LLMConfig{
+			Enabled:  false,
+			Provider: "openrouter",
+			Model:    "deepseek/deepseek-chat",
+			Language: "en",
+		},
+	}
+	_ = cfg.ValidateAndSetDefaults()
+	return cfg
+}
+
 // ValidateAndSetDefaults verifies configuration rules and establishes sane defaults.
 func (c *Config) ValidateAndSetDefaults() error {
 	if c.Database.Path == "" {
@@ -236,6 +297,9 @@ func (c *Config) ValidateAndSetDefaults() error {
 		if c.Feeds[i].Name == "" {
 			c.Feeds[i].Name = c.Feeds[i].URL
 		}
+		if strings.TrimSpace(c.Feeds[i].Category) == "" {
+			c.Feeds[i].Category = "General"
+		}
 	}
 
 	if c.LLM.Enabled {
@@ -248,12 +312,18 @@ func (c *Config) ValidateAndSetDefaults() error {
 		if c.LLM.Language == "" {
 			c.LLM.Language = "en"
 		}
+		provider := strings.ToLower(strings.TrimSpace(c.LLM.Provider))
+		if provider != "ollama" && strings.TrimSpace(c.LLM.APIKey) == "" {
+			return fmt.Errorf("llm is enabled with provider %q but api_key is missing", c.LLM.Provider)
+		}
 	}
 
-	if strings.ToLower(strings.TrimSpace(c.Enrichment.Scraper)) == "firecrawl" {
-		if strings.TrimSpace(c.Enrichment.FirecrawlAPIKey) == "" {
-			return fmt.Errorf("enrichment scraper is set to \"firecrawl\" but firecrawl_api_key is missing")
-		}
+	scraper := strings.ToLower(strings.TrimSpace(c.Enrichment.Scraper))
+	if scraper == "firecrawl" && strings.TrimSpace(c.Enrichment.FirecrawlAPIKey) == "" {
+		return fmt.Errorf("enrichment scraper is set to \"firecrawl\" but firecrawl_api_key is missing")
+	}
+	if scraper == "jina" && strings.TrimSpace(c.Enrichment.JinaAPIKey) == "" {
+		return fmt.Errorf("enrichment scraper is set to \"jina\" but jina_api_key is missing")
 	}
 
 	if c.Dispatch.Telegram.Enabled {

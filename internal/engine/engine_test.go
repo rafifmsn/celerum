@@ -236,3 +236,68 @@ func TestBuildPayloadMultiSourceScraping(t *testing.T) {
 	}
 }
 
+func TestPollFeedsAlwaysLoadsPersistedETag(t *testing.T) {
+	tempDir := t.TempDir()
+	st, err := store.New(filepath.Join(tempDir, "etag_test.db"))
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	defer st.Close()
+
+	var sawIfNoneMatch string
+	feedServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sawIfNoneMatch = r.Header.Get("If-None-Match")
+		w.WriteHeader(http.StatusNotModified)
+	}))
+	defer feedServer.Close()
+
+	// Seed ETag in SQLite while feedBuffers is completely empty (simulating fresh restart)
+	if err := st.UpdateFeedState(feedServer.URL, `"persisted-v9"`, "Mon, 02 Jan 2006 15:04:05 MST", time.Now()); err != nil {
+		t.Fatalf("UpdateFeedState: %v", err)
+	}
+
+	cfg := &config.Config{
+		Engine: config.EngineConfig{
+			PollDuration:       5 * time.Minute,
+			WindowDur:          3 * time.Hour,
+			FlushDur:           1 * time.Hour,
+			MaxArticlesPerFeed: 10,
+		},
+		Feeds: []config.FeedConfig{
+			{Name: "TestFeed", URL: feedServer.URL, Tier: 1},
+		},
+	}
+
+	eng := New(cfg, st)
+	if len(eng.feedBuffers[feedServer.URL]) != 0 {
+		t.Fatalf("expected empty feedBuffers initially")
+	}
+
+	if err := eng.PollFeeds(context.Background()); err != nil {
+		t.Fatalf("PollFeeds: %v", err)
+	}
+	if sawIfNoneMatch != `"persisted-v9"` {
+		t.Fatalf("expected If-None-Match header %q even with empty buffer, got %q", `"persisted-v9"`, sawIfNoneMatch)
+	}
+}
+
+func TestComputeAdaptiveDelay(t *testing.T) {
+	base := 5 * time.Minute
+
+	d1, c1 := computeAdaptiveDelay(base, 0, 0, false)
+	if c1 != 1 || d1 < 6*time.Minute || d1 > 9*time.Minute {
+		t.Fatalf("expected ~7.5m backoff on first 304, got %v (count=%d)", d1, c1)
+	}
+
+	d2, c2 := computeAdaptiveDelay(base, 5, 0, false)
+	if c2 != 6 || d2 > 34*time.Minute {
+		t.Fatalf("expected capped ~30m backoff, got %v (count=%d)", d2, c2)
+	}
+
+	dReset, cReset := computeAdaptiveDelay(base, 4, 0, true)
+	if cReset != 0 || dReset < 4*time.Minute || dReset > 6*time.Minute {
+		t.Fatalf("expected reset to ~5m when new articles arrive, got %v (count=%d)", dReset, cReset)
+	}
+}
+
+
