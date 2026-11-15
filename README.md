@@ -233,29 +233,30 @@ go test -v ./...
 
 ## Benchmarks
 
-Celerum avoids neural embeddings and vector databases in favor of deterministic set-theoretic clustering and HTTP conditional caching.
-The engine clusters active sliding windows in sub-3ms per 100 articles on a constrained <15MB RAM footprint, scaling to 1,000 items under 18MB.
-All algorithmic benchmarks below are measured on Go 1.25+ on an AMD Ryzen 5 6600H CPU without external network or LLM dependencies.
+Celerum avoids neural embeddings and vector databases in favor of deterministic lexical shingling, BM25/TF-IDF cosine clustering, and HTTP conditional caching.
+The engine clusters 100 active articles in ~4.21 ms (`2.03 MB / op`) and scales to 500 articles in ~52.60 ms (`14.60 MB / op`), including inverted index pruning, centroid checks, and complete-linkage guards.
+All algorithmic benchmarks below are 3-run medians measured on Go 1.25+ on an AMD Ryzen 5 6600H CPU without external network, SQLite, or LLM dependencies.
 
 ![Celerum Engine Benchmarks](./benchmarks.jpg)
 
 ### Performance Highlights
 
-| Component / Operation          | Benchmark Metric | Allocations / Memory              | Engineering Impact                                                          |
-| :----------------------------- | :--------------- | :-------------------------------- | :-------------------------------------------------------------------------- |
-| **Two-Pointer Jaccard Scan**   | 11.01 ns / op    | 0 B / op, 0 allocs / op           | Zero heap allocation similarity comparison across sorted 64-bit uint slices |
-| **Shingle & Token Hash**       | 13.80 µs / op    | 5.0 KB / op, 44 allocs / op       | FNV-1a 64-bit unigram and bigram hashing with stop-word stripping           |
-| **Cluster Corpus (100 items)** | 2.38 ms / run    | 1.14 MB / op, 8,075 allocs        | Real-time sliding window event clustering for active RSS streams            |
-| **Cluster Corpus (500 items)** | 21.72 ms / run   | 8.71 MB / op, 35,971 allocs       | High-density multi-source coverage deduplication and Union-Find merging     |
-| **Inverted Index Pruning**     | 80.16% pruned    | Evaluated 24,750 of 124,750 pairs | Bypasses pairwise comparisons when documents share fewer than 2 shingles    |
+| Component / Operation          | Benchmark Metric | Allocations / Memory              | Engineering Impact                                                              |
+| :----------------------------- | :--------------- | :-------------------------------- | :------------------------------------------------------------------------------ |
+| **Sparse Cosine Dot**          | 182.6 ns / op    | 0 B / op, 0 allocs / op           | Zero heap allocation dot product across L2-normalized BM25/TF-IDF vectors       |
+| **Velocity Scoring (5 items)** | 4.64 us / op     | 6.34 KB / op, 10 allocs / op      | Unique-source deduplication, inverted tier weights, keyword, and decay scoring  |
+| **Shingle & Token Hash**       | 13.13 us / op    | 5.06 KB / op, 44 allocs / op      | FNV-1a 64-bit unigram and bigram hashing with stop-word stripping and stemming  |
+| **Cluster Corpus (100 items)** | 4.21 ms / run    | 2.03 MB / op, 11,333 allocs       | Full BM25/TF-IDF clustering with centroid and complete-linkage guards           |
+| **Cluster Corpus (500 items)** | 52.60 ms / run   | 14.60 MB / op, 52,350 allocs      | Bounded multi-source coverage deduplication and Union-Find merging              |
+| **Inverted Index Pruning**     | 80.16% pruned    | Evaluated 24,750 of 124,750 pairs | Bypasses pairwise cosine scoring when documents share fewer than 2 shingles      |
 
 ### Reproduce Benchmarks
 
 Run the benchmark suite and pruning verification locally:
 
 ```bash
-# Run micro-benchmarks with memory profiling
-go test -bench=. -benchmem ./internal/cluster
+# Run micro-benchmarks with memory profiling across clustering and scoring
+go test -bench=. -benchmem -count=3 ./internal/cluster ./internal/score
 
 # Measure inverted index pairwise pruning efficiency
 go test -v -run TestPruningEfficiency ./internal/cluster

@@ -152,13 +152,19 @@ func TestFilterClusterableArticles(t *testing.T) {
 	}
 }
 
-func BenchmarkJaccard(b *testing.B) {
-	shinglesA := []uint64{10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120, 130, 140, 150}
-	shinglesB := []uint64{20, 40, 60, 80, 100, 120, 140, 160, 180, 200, 220, 240, 260, 280, 300}
+func BenchmarkCosineDot(b *testing.B) {
+	vecA := normalizeVec(sparseVec{
+		"blackrock": 2.4, "bitcoin": 1.9, "etf": 2.1, "inflow": 2.6, "billion": 1.8,
+		"institution": 1.5, "market": 1.2, "surge": 1.4, "spot": 1.6, "sec": 2.0,
+	})
+	vecB := normalizeVec(sparseVec{
+		"blackrock": 2.4, "bitcoin": 1.9, "etf": 2.1, "record": 1.7, "daily": 1.3,
+		"investor": 1.5, "market": 1.2, "rally": 1.4, "spot": 1.6, "fund": 1.1,
+	})
 
 	b.ReportAllocs()
 	for b.Loop() {
-		_ = Jaccard(shinglesA, shinglesB)
+		_ = dotVec(vecA, vecB)
 	}
 }
 

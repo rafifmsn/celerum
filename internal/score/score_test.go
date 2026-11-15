@@ -159,4 +159,25 @@ func TestUniqueSourceCountAndDecay(t *testing.T) {
 	}
 }
 
+func BenchmarkScoreCluster(b *testing.B) {
+	cfg := &config.Config{
+		Engine:   config.EngineConfig{TopK: 5},
+		Keywords: config.KeywordsConfig{Boost: []string{"etf", "sec", "fed", "ath", "acquisition"}},
+	}
+	scorer := NewScorer(cfg)
+	now := time.Now()
+	articles := []model.Article{
+		{ID: "1", FeedURL: "https://coindesk.com/rss", FeedTier: 1, Title: "SEC approves spot Ethereum ETF filings", Description: "Regulators greenlight spot ETF listings across major exchanges.", PublishedAt: now.Add(-12 * time.Minute)},
+		{ID: "2", FeedURL: "https://bloomberg.com/rss", FeedTier: 1, Title: "US SEC clears spot Ethereum ETFs for trading", Description: "Issuers finalize fee disclosures ahead of market open.", PublishedAt: now.Add(-10 * time.Minute)},
+		{ID: "3", FeedURL: "https://cointelegraph.com/rss", FeedTier: 2, Title: "Ethereum ETF approval triggers institutional inflows", Description: "Market analysts expect billions in new allocations.", PublishedAt: now.Add(-8 * time.Minute)},
+		{ID: "4", FeedURL: "https://theblock.co/rss", FeedTier: 2, Title: "Spot Ether ETFs receive final SEC sign-off", Description: "Trading begins following S-1 effectiveness.", PublishedAt: now.Add(-5 * time.Minute)},
+		{ID: "5", FeedURL: "https://decrypt.co/rss", FeedTier: 3, Title: "Ether climbs as SEC approves ETF applications", Description: "Crypto markets rally after regulatory milestone.", PublishedAt: now.Add(-3 * time.Minute)},
+	}
+
+	b.ReportAllocs()
+	for b.Loop() {
+		_ = scorer.ScoreCluster(articles, now)
+	}
+}
+
 
