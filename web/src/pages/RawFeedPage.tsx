@@ -96,7 +96,7 @@ export function RawFeedPage({ searchQuery, streamTick }: RawFeedPageProps) {
           No articles ingested for the current filter criteria.
         </Card>
       ) : (
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-3.5">
+        <Card className="overflow-hidden divide-y divide-[#22222A]">
           {(data?.articles ?? []).map((article) => {
             const desc = article.description?.trim()
             const hasDistinctDesc =
@@ -108,45 +108,48 @@ export function RawFeedPage({ searchQuery, streamTick }: RawFeedPageProps) {
                 href={article.url}
                 target="_blank"
                 rel="noreferrer"
-                className="bg-[#18181C] border border-[#22222A] hover:border-[#32323E] rounded-[22px] p-5 flex flex-col justify-between gap-3 transition-colors group"
+                className="flex flex-col md:flex-row md:items-center gap-2.5 md:gap-4 px-5 py-3.5 hover:bg-[#1E1E24]/70 transition-colors group"
               >
-                <div className="space-y-2.5">
-                  <div className="flex flex-wrap items-center gap-2 text-[11px]">
-                    <Badge
-                      variant={
-                        article.feed_tier === 1
-                          ? 'tier1'
-                          : article.feed_tier === 2
-                            ? 'tier2'
-                            : 'tier3'
-                      }
-                    >
-                      {tierLabel(article.feed_tier)} &middot;{' '}
-                      {article.feed_name || article.feed_url}
-                    </Badge>
-                    {article.category && <Badge>{article.category}</Badge>}
-                    <span className="text-[#7A7A86] tabular-nums">
-                      {formatRelativeTime(article.published_at || article.ingested_at)}
-                    </span>
-                  </div>
+                <div className="flex items-center gap-2 md:w-52 shrink-0 min-w-0">
+                  <Badge
+                    variant={
+                      article.feed_tier === 1
+                        ? 'tier1'
+                        : article.feed_tier === 2
+                          ? 'tier2'
+                          : 'tier3'
+                    }
+                    className="shrink-0"
+                  >
+                    {tierLabel(article.feed_tier)}
+                  </Badge>
+                  <Badge className="truncate max-w-[140px]">
+                    {article.feed_name || article.feed_url}
+                  </Badge>
+                </div>
 
-                  <div className="flex items-start justify-between gap-3">
-                    <h3 className="text-[15px] font-semibold text-white group-hover:text-white leading-snug">
-                      {article.title}
-                    </h3>
-                    <ExternalLink className="w-3.5 h-3.5 text-[#6B6B76] opacity-0 group-hover:opacity-100 transition-opacity shrink-0 mt-1" />
-                  </div>
-
+                <div className="flex-1 min-w-0">
+                  <h3 className="text-[14px] sm:text-[15px] font-semibold text-[#F4F4F6] group-hover:text-white leading-snug">
+                    {article.title}
+                  </h3>
                   {hasDistinctDesc && (
-                    <p className="text-[12px] text-[#A0A0AB] line-clamp-2 leading-relaxed">
+                    <p className="text-[12px] text-[#A0A0AB] line-clamp-2 leading-relaxed mt-1">
                       {desc}
                     </p>
                   )}
                 </div>
+
+                <div className="flex items-center justify-start md:justify-end gap-2.5 shrink-0 text-[11px]">
+                  {article.category && <Badge>{article.category}</Badge>}
+                  <span className="text-[#7A7A86] tabular-nums">
+                    {formatRelativeTime(article.published_at || article.ingested_at)}
+                  </span>
+                  <ExternalLink className="w-3.5 h-3.5 text-[#6B6B76] opacity-70 md:opacity-0 md:group-hover:opacity-70 transition-opacity shrink-0" />
+                </div>
               </a>
             )
           })}
-        </div>
+        </Card>
       )}
 
       <Card className="px-5 py-3.5 flex flex-wrap items-center justify-between gap-3 text-[12px] text-[#8B8B96]">

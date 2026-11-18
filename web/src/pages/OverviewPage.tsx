@@ -118,18 +118,11 @@ export function OverviewPage({
         <Card className="p-6 sm:p-7 relative overflow-hidden">
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-center">
             <div className="lg:col-span-6 flex flex-col gap-4">
-              <div className="flex items-center gap-2 text-[12px] text-[#8B8B96]">
-                <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-[#121215] border border-[#24242C]">
-                  <span className="w-1.5 h-1.5 rounded-full bg-white" />
-                  Live Engine Telemetry
-                </span>
-              </div>
-
               <div>
                 <h1 className="text-[28px] sm:text-[32px] font-semibold tracking-tight text-white leading-tight">
                   Command Center
                 </h1>
-                <p className="text-[13px] text-[#8B8B96] mt-1.5">
+                <p className="text-[13px] text-[#8B8B96] mt-1.5 max-w-72">
                   Real-time ingestion velocity, shingle clustering compression, and SLA webhook delivery.
                 </p>
               </div>

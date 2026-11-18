@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { CheckCircle2, Loader2, Plus, RefreshCw, Save, Stethoscope, X, XCircle } from 'lucide-react'
+import { CheckCircle2, Loader2, Plus, RefreshCw, X, XCircle } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
@@ -72,6 +72,11 @@ export function SettingsPage() {
     if (!q) return models
     return models.filter((m) => m.toLowerCase().includes(q))
   }, [models, modelSearch])
+
+  const isDirty = useMemo(() => {
+    if (!draft || !savedSnapshot) return false
+    return JSON.stringify(draft) !== JSON.stringify(savedSnapshot)
+  }, [draft, savedSnapshot])
 
   const validateClient = (cfg: SettingsPayload): string | null => {
     const scraper = cfg.enrichment.scraper.toLowerCase()
@@ -192,15 +197,16 @@ export function SettingsPage() {
       <div className="xl:col-span-8 flex flex-col gap-5">
         <Card className="p-5 flex flex-wrap items-center justify-between gap-4">
           <h1 className="text-[20px] font-semibold text-white">Pipeline Settings & Secrets</h1>
-          <div className="flex items-center gap-2.5">
-            <Button variant="ghost" onClick={handleDiscard}>
-              Discard Changes
-            </Button>
-            <Button variant="primary" onClick={handleSave} disabled={saving}>
-              <Save className="w-3.5 h-3.5" />
-              {saving ? 'Saving...' : 'Save Configuration'}
-            </Button>
-          </div>
+          {isDirty && (
+            <div className="flex items-center gap-2.5">
+              <Button variant="ghost" onClick={handleDiscard}>
+                Discard Changes
+              </Button>
+              <Button variant="primary" onClick={handleSave} disabled={saving}>
+                {saving ? 'Saving...' : 'Save Configuration'}
+              </Button>
+            </div>
+          )}
         </Card>
 
         {validationError && (
@@ -223,16 +229,13 @@ export function SettingsPage() {
                 Generates editorial single-paragraph summaries for Breaking clusters.
               </p>
             </div>
-            <div className="flex items-center gap-2.5">
-              <span className="text-[12px] text-[#9A9AA6]">Enabled</span>
-              <Switch
-                checked={draft.llm.enabled}
-                onCheckedChange={(enabled) =>
-                  setDraft({ ...draft, llm: { ...draft.llm, enabled } })
-                }
-                label="Enable LLM synthesis"
-              />
-            </div>
+            <Switch
+              checked={draft.llm.enabled}
+              onCheckedChange={(enabled) =>
+                setDraft({ ...draft, llm: { ...draft.llm, enabled } })
+              }
+              label="Enable LLM synthesis"
+            />
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -355,9 +358,9 @@ export function SettingsPage() {
                   })
                 }
               >
-                <option value="none">RSS Description Only (none)</option>
-                <option value="jina">Jina Reader (jina)</option>
-                <option value="firecrawl">Firecrawl (firecrawl)</option>
+                <option value="none">RSS Description Only</option>
+                <option value="jina">Jina Reader</option>
+                <option value="firecrawl">Firecrawl</option>
               </Select>
             </div>
 
@@ -585,10 +588,10 @@ export function SettingsPage() {
       <aside className="xl:col-span-4 min-w-0 xl:sticky xl:top-6">
         <Card className="p-5 space-y-4 overflow-hidden">
           <div className="flex items-center justify-between gap-2">
-            <div className="flex items-center gap-2 min-w-0">
-              <Stethoscope className="w-4 h-4 text-white shrink-0" />
-              <h2 className="text-[15px] font-semibold text-white truncate">System Doctor Diagnostics</h2>
-            </div>
+            <h2 className="text-[15px] font-semibold text-white truncate">
+              <span className="sm:hidden">Diagnostics</span>
+              <span className="hidden sm:inline">System Doctor Diagnostics</span>
+            </h2>
             <Button size="sm" variant="primary" onClick={handleRunDoctor} disabled={runningDoctor} className="shrink-0">
               {runningDoctor ? (
                 <>
@@ -602,7 +605,7 @@ export function SettingsPage() {
           </div>
 
           {!doctorReport ? (
-            <div className="p-6 rounded-2xl bg-[#121215] border border-[#22222A] text-center text-[12px] text-[#7A7A86]">
+            <div className="p-6 rounded-2xl bg-[#121215] border border-[#22222A] text-left lg:text-center lg:text-balance text-[12px] text-[#7A7A86]">
               Click &ldquo;Run Doctor&rdquo; to verify Store, Feeds, Scraper, LLM, and Dispatch targets.
             </div>
           ) : (
