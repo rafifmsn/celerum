@@ -145,7 +145,7 @@ export function OverviewPage({
                       className={cn(
                         'px-2.5 py-1 rounded-full text-[11px] font-medium transition-colors cursor-pointer',
                         tier === pill.id
-                          ? 'bg-white text-[#0B0B0D]'
+                          ? 'bg-gradient-to-b from-[#F4F4F6] to-[#D4D4DC] text-[#0B0B0D]'
                           : 'text-[#8B8B96] hover:text-white',
                       )}
                     >

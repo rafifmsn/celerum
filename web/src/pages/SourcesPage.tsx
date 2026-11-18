@@ -268,7 +268,7 @@ export function SourcesPage({ searchQuery, streamTick }: SourcesPageProps) {
             </span>
           </div>
           <div className="h-2.5 w-full rounded-full bg-[#121215] border border-[#22222A] overflow-hidden flex">
-            <div className="bg-white h-full transition-all" style={{ width: `${t1Pct}%` }} />
+            <div className="bg-gradient-to-r from-[#E4E4EA] to-[#B8B8C4] h-full transition-all" style={{ width: `${t1Pct}%` }} />
             <div className="bg-[#7A7A86] h-full transition-all" style={{ width: `${t2Pct}%` }} />
             <div className="bg-[#34343F] h-full transition-all" style={{ width: `${t3Pct}%` }} />
           </div>

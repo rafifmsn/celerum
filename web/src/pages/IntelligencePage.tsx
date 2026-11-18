@@ -62,7 +62,7 @@ export function IntelligencePage({ searchQuery, streamTick }: IntelligencePagePr
                 className={cn(
                   'px-3.5 py-1.5 rounded-full text-[12px] font-medium transition-colors cursor-pointer',
                   filter === opt.id
-                    ? 'bg-white text-[#0B0B0D]'
+                    ? 'bg-gradient-to-b from-[#F4F4F6] to-[#D4D4DC] text-[#0B0B0D]'
                     : 'bg-[#121215] border border-[#24242C] text-[#9A9AA6] hover:text-white',
                 )}
               >
@@ -263,7 +263,7 @@ export function IntelligencePage({ searchQuery, streamTick }: IntelligencePagePr
                 className={cn(
                   'px-3 py-2.5 rounded-xl border text-left transition-colors cursor-pointer',
                   tier === item.id
-                    ? 'bg-white text-[#0B0B0D] border-white'
+                    ? 'bg-gradient-to-b from-[#F4F4F6] to-[#D4D4DC] text-[#0B0B0D] border-[#E4E4EA]'
                     : 'bg-[#121215] border-[#24242C] text-[#A0A0AB] hover:text-white',
                 )}
               >

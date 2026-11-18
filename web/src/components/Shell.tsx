@@ -79,7 +79,7 @@ export function Shell({
                         'transition-colors flex items-center justify-center',
                         'w-10 h-10 rounded-full md:w-auto md:h-auto md:px-4 md:py-2 md:rounded-full md:gap-2 text-[13px] font-medium',
                         isActive
-                          ? 'bg-white text-[#0B0B0D] font-semibold shadow-sm'
+                          ? 'bg-gradient-to-b from-[#F4F4F6] to-[#D4D4DC] text-[#0B0B0D] font-semibold shadow-sm'
                           : 'bg-[#18181C] md:bg-transparent text-[#8B8B96] hover:text-white hover:bg-[#1E1E24]',
                       )
                     }
@@ -112,7 +112,7 @@ export function Shell({
               className={cn(
                 'w-9 h-9 rounded-full border flex items-center justify-center transition-colors cursor-pointer shrink-0',
                 isDispatch
-                  ? 'bg-white text-[#0B0B0D] border-white'
+                  ? 'bg-gradient-to-b from-[#F4F4F6] to-[#D4D4DC] text-[#0B0B0D] border-[#E4E4EA]'
                   : 'bg-[#18181C] border-[#24242C] text-[#9A9AA6] hover:text-white hover:bg-[#22222A]',
               )}
             >
@@ -127,7 +127,7 @@ export function Shell({
               className={cn(
                 'w-9 h-9 rounded-full border flex items-center justify-center transition-colors cursor-pointer shrink-0',
                 isSettings
-                  ? 'bg-white text-[#0B0B0D] border-white'
+                  ? 'bg-gradient-to-b from-[#F4F4F6] to-[#D4D4DC] text-[#0B0B0D] border-[#E4E4EA]'
                   : 'bg-[#18181C] border-[#24242C] text-[#9A9AA6] hover:text-white hover:bg-[#22222A]',
               )}
             >
