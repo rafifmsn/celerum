@@ -31,12 +31,12 @@ sequenceDiagram
     E-->>U: Broadcast SSE EngineEvent (/api/events)
 ```
 
-## 1. Design Principles
+## Design Principles
 
 Celerum is built as a single zero-CGO Go binary combining scheduled RSS/Atom ingestion, deterministic clustering, hybrid alerting, and an embedded React SPA served over standard `net/http`.
 Rather than depending on vector databases or embedding APIs, the pipeline keeps similarity and scoring deterministic, self-contained in memory, and persisted in SQLite (`modernc.org/sqlite` in WAL mode).
 
-## 2. Ingestion & Adaptive Polling (`internal/feed`, `internal/engine`)
+## Ingestion & Adaptive Polling (`internal/feed`, `internal/engine`)
 
 Polling high-frequency publishers uniformly wastes bandwidth and invites rate limits.
 Celerum implements conditional caching paired with browser-aligned TLS transport and per-feed adaptive intervals:
@@ -53,7 +53,7 @@ Celerum implements conditional caching paired with browser-aligned TLS transport
   Only empty titles and URLs matching `keywords.blocklist` are excluded at ingest, capped at `max_articles_per_feed` items per poll cycle.
   Short breaking headlines remain persisted in SQLite for the Raw Feed UI even if they are filtered out downstream during clustering.
 
-## 3. Shingle Pruning & Bounded TF-IDF Clustering (`internal/cluster`)
+## Shingle Pruning & Bounded TF-IDF Clustering (`internal/cluster`)
 
 Multi-source news clustering uses lexical shingling, inverted-index pruning, and bounded agglomerative merging in `ClusterArticlesWithStats`:
 
@@ -80,7 +80,7 @@ flowchart LR
    Qualifying pairs are sorted descending by similarity and merged via `DisjointSet` only when combined cluster size stays within `50` items, cluster centroid cosine meets `0.85 * threshold`, and all cross-cluster member pairs meet a complete-linkage floor of `0.60 * threshold`.
    This prevents transitive `A-B-C` chaining into unrelated mega-clusters.
 
-## 4. Inverted Tier Velocity Scoring (`internal/score`)
+## Inverted Tier Velocity Scoring (`internal/score`)
 
 `Scorer.ScoreCluster` evaluates corroboration breadth, inverted publisher authority, keyword boosts, and exponential decay:
 
@@ -104,7 +104,7 @@ $$S(C_k) = (6.0 + 9.0 + 4.0) \times 0.9439 \approx 17.93$$
 
 Because $17.93 \ge 12.0$ (`breaking_threshold`), the cluster triggers an immediate breaking dispatch instead of waiting for `flush_interval`.
 
-## 5. SQLite Persistence & Dual Pruning (`internal/store`)
+## SQLite Persistence & Dual Pruning (`internal/store`)
 
 SQLite serves as the single runtime source of truth for both pipeline state and UI management:
 
@@ -114,7 +114,7 @@ SQLite serves as the single runtime source of truth for both pipeline state and 
 - **Content & Delivery State:** `articles` persists ingested items indexed for paginated querying (`QueryArticles`), `clusters` tracks active/buffered/dispatched event groups, `dispatched_clusters` records SHA-256 cluster hashes (`ComputeClusterHash`) with summary metadata (`QueryDispatchedClustersPage`), and `webhook_retries` queues failed deliveries.
 - **Dual Time + Cap Retention (`PruneWithLimits`):** Background cleanup removes records older than `7` days while enforcing per-feed (`500` rows) and global (`10000` rows) article caps to keep SQLite queries fast on unbounded deployments.
 
-## 6. Hybrid Dispatch Cadence & Failure Recovery
+## Hybrid Dispatch Cadence & Failure Recovery
 
 Celerum pairs immediate alerts for high-velocity stories with periodic top-K digests:
 
@@ -132,7 +132,7 @@ Celerum pairs immediate alerts for high-velocity stories with periodic top-K dig
 - **Retry Queue (`ProcessRetries`):**
   Failed Telegram or HTTP webhook deliveries write to `webhook_retries` and retry once per minute with exponential backoff ($2^{\text{attempts}}$ minutes) up to 5 attempts, with manual retry and delete controls in the web UI.
 
-## 7. Web Server, REST API & SSE (`internal/server`, `web/`)
+## Web Server, REST API & SSE (`internal/server`, `web/`)
 
 `Server` serves the compiled React SPA embedded from `web/dist` (`web.DistFS`) alongside JSON REST and Server-Sent Events endpoints on `-addr` (default `:8080`):
 
@@ -140,7 +140,7 @@ Celerum pairs immediate alerts for high-velocity stories with periodic top-K dig
 - **Source & Config Management:** CRUD routes on `/api/sources`, YAML import/export on `/api/config/yaml`, live hot-reloaded settings on `/api/settings` (`Engine.UpdateConfig`), model discovery on `POST /api/models/discover`, and non-destructive 6-stage pipeline verification on `POST /api/doctor`.
 - **Dispatch & Realtime Events:** `GET /api/dispatch` (queue + paginated history), `POST /api/dispatch/flush`, `POST /api/dispatch/retries/{id}/retry`, `DELETE /api/dispatch/retries/{id}`, and `GET /api/events` SSE streaming `EngineEvent` updates (`poll_completed`, `dispatch_updated`, `settings_updated`, `sources_updated`).
 
-## 8. Standardized Payload & Telegram Formatting
+## Standardized Payload & Telegram Formatting
 
 Webhook payloads follow a uniform JSON schema (`model.Payload` in `pkg/model`):
 
