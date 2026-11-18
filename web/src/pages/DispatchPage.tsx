@@ -112,7 +112,7 @@ export function DispatchPage({ searchQuery, streamTick }: DispatchPageProps) {
               onClick={() => setTab('pending')}
               className={cn(
                 'px-3.5 py-1.5 rounded-full text-[12px] font-medium transition-colors cursor-pointer',
-                tab === 'pending' ? 'bg-white text-[#0B0B0D]' : 'text-[#8B8B96] hover:text-white',
+                tab === 'pending' ? 'bg-gradient-to-b from-[#F4F4F6] to-[#D4D4DC] text-[#0B0B0D]' : 'text-[#8B8B96] hover:text-white',
               )}
             >
               Pending & Retrying
@@ -125,7 +125,7 @@ export function DispatchPage({ searchQuery, streamTick }: DispatchPageProps) {
               onClick={() => setTab('history')}
               className={cn(
                 'px-3.5 py-1.5 rounded-full text-[12px] font-medium transition-colors cursor-pointer',
-                tab === 'history' ? 'bg-white text-[#0B0B0D]' : 'text-[#8B8B96] hover:text-white',
+                tab === 'history' ? 'bg-gradient-to-b from-[#F4F4F6] to-[#D4D4DC] text-[#0B0B0D]' : 'text-[#8B8B96] hover:text-white',
               )}
             >
               Dispatched History

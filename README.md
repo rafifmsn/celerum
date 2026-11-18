@@ -127,7 +127,9 @@ For scraper trade-offs, config precedence, and operational limits, see [docs/lim
    ```
 
    Open `http://localhost:8080` in your browser to monitor live telemetry, inspect raw articles and clusters, manage sources, or hot-reload settings without restarting.
-   Pass `-c` only when you want to bootstrap or overwrite SQLite configuration from YAML, because bare `./celerum run` resumes directly from the SQLite database.
+   Passing `-c` on `run` only seeds an empty SQLite database on first boot; once initialized, bare `./celerum run` resumes from SQLite.
+   
+   To overwrite an existing SQLite configuration from YAML via CLI, run `./celerum import -c celerum.yaml` (then restart `celerum run` if it is already running) or use `Sources -> Import YAML` in the dashboard.
 
 ## Production Deployment
 
@@ -300,17 +302,3 @@ engine:
 - 15-Minute Digest Cadence ensures monitoring desks receive timely market digests without waiting an hour during quiet cycles.
 - Tighter 1-Hour Window ensures stale single-source noise exits the active cluster evaluation promptly after 60 minutes.
 - A breaking Tier-1 wire reported by two distinct Tier-1 outlets scores $(2 \times 3.0) + (2 \times 4.5) = 15.0$ before keyword boosts, immediately crossing `14.0` and delivering as soon as polled rather than waiting for any flush timer.
-
-## Limitations & Edge Cases
-
-- **Strict Scraper & LLM Key Validation:**
-  Selecting `jina`, `firecrawl`, or non-`ollama` LLM providers enforces non-empty API keys at config save and `doctor` verification rather than failing silently.
-
-- **Direct Scraper (`scraper: direct`):**
-  Performs basic HTTP GET requests and HTML tag stripping without domain-level rate-limiting, IP rotation, or JavaScript hydration.
-  Target publishers fronted by strict WAFs or Cloudflare may return HTTP 403 or 429 status codes.
-
-- **YAML Bootstrap vs SQLite Runtime State:**
-  Once seeded in SQLite, UI source/setting edits modify SQLite directly while `celerum.yaml` on disk remains unchanged unless exported via `/api/config/yaml`.
-
-For detailed edge cases and recommended mitigations, refer to [docs/limitations.md](docs/limitations.md).

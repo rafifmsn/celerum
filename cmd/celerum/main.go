@@ -26,6 +26,7 @@ const usage = `Celerum - Algorithmic RSS Intelligence Engine
 
 Usage:
   celerum init [-c config.yaml]               Create default configuration file
+  celerum import [-c config.yaml]             Overwrite SQLite settings and sources from YAML
   celerum check [-c config.yaml]              Dry-run feed clustering and scoring to stdout
   celerum doctor [-c config.yaml] [--send]    Run 6-stage non-destructive diagnostics
   celerum test telegram [-c config.yaml]      Send test alert to verify Telegram credentials
@@ -49,6 +50,8 @@ func main() {
 	switch subcommand {
 	case "init":
 		runInit(subArgs)
+	case "import":
+		runImport(subArgs)
 	case "check":
 		runCheck(subArgs)
 	case "doctor":
@@ -83,6 +86,40 @@ func runInit(args []string) {
 	}
 
 	fmt.Printf("Created default configuration template at %s\n", *configPath)
+}
+
+func importConfigFile(configPath string) (int, string, error) {
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		return 0, "", fmt.Errorf("error loading config: %w", err)
+	}
+
+	st, err := store.New(cfg.Database.Path)
+	if err != nil {
+		return 0, "", fmt.Errorf("error initializing store: %w", err)
+	}
+	defer st.Close()
+
+	if err := st.ImportConfig(cfg, true); err != nil {
+		return 0, "", fmt.Errorf("error importing config: %w", err)
+	}
+
+	return len(cfg.Feeds), cfg.Database.Path, nil
+}
+
+func runImport(args []string) {
+	fs := flag.NewFlagSet("import", flag.ExitOnError)
+	configPath := fs.String("c", "celerum.yaml", "Path to config file")
+	_ = fs.Parse(args)
+
+	feedCount, dbPath, err := importConfigFile(*configPath)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+
+	fmt.Printf("Imported %d feed(s) and runtime settings from %s into %s\n", feedCount, *configPath, dbPath)
+	fmt.Println("Note: if 'celerum run' is currently running, restart it to reload the updated SQLite configuration.")
 }
 
 func runCheck(args []string) {
