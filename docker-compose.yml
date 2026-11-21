@@ -11,6 +11,8 @@ services:
     build: .
     container_name: celerum
     restart: unless-stopped
+    ports:
+      - "${PORT:-8080}:8080"
     volumes:
       - ./celerum.yaml:/app/celerum.yaml:ro
       - ./data:/app/data
