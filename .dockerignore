@@ -7,4 +7,6 @@ celerum
 celerum.exe
 *.db
 *.db-journal
+web/node_modules/
+web/dist/
 
