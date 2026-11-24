@@ -21,9 +21,10 @@ data/
 *.db-wal
 *.db-shm
 
-# Frontend dependencies
+# Frontend dependencies and build output
 node_modules/
 web/node_modules/
+web/dist/
 
 # IDE and OS
 .DS_Store

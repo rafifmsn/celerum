@@ -95,7 +95,7 @@ For scraper trade-offs, config precedence, and operational limits, see [docs/lim
    go build -o celerum ./cmd/celerum
    ```
 
-   If `web/dist` is already built and committed or up to date, `go build -o celerum ./cmd/celerum` embeds it directly.
+   Building from source requires compiling `web/dist` first so `go:embed` can embed the React SPA, whereas Docker builds both stages automatically via [Dockerfile](Dockerfile).
 
 2. **Initialize configuration and environment (optional):**
 
