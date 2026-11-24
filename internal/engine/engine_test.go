@@ -300,4 +300,68 @@ func TestComputeAdaptiveDelay(t *testing.T) {
 	}
 }
 
+func TestEngineSyncConfigRevision(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "sync_rev.db")
+	stDaemon, err := store.New(dbPath)
+	if err != nil {
+		t.Fatalf("store.New daemon: %v", err)
+	}
+	defer stDaemon.Close()
+
+	seed := &config.Config{
+		Version: "1",
+		Engine: config.EngineConfig{
+			PollInterval:   "5m",
+			WindowDuration: "3h",
+			FlushInterval:  "1h",
+			TopK:           3,
+		},
+		Feeds: []config.FeedConfig{
+			{Name: "Feed A", URL: "https://example.com/a.xml", Tier: 1},
+		},
+	}
+	cfg, err := stDaemon.BootstrapConfig(seed)
+	if err != nil {
+		t.Fatalf("BootstrapConfig: %v", err)
+	}
+
+	eng := New(cfg, stDaemon)
+	if eng.SyncConfigRevision() {
+		t.Fatalf("expected no reload when revision has not changed")
+	}
+
+	// Simulate an external writer process (such as 'celerum mcp' or 'celerum import').
+	stExternal, err := store.New(dbPath)
+	if err != nil {
+		t.Fatalf("store.New external: %v", err)
+	}
+	defer stExternal.Close()
+
+	if _, err := stExternal.CreateSource(store.SourceRecord{
+		Name:     "Feed B",
+		URL:      "https://example.com/b.xml",
+		Category: "Tech",
+		Tier:     1,
+		Enabled:  true,
+	}); err != nil {
+		t.Fatalf("external CreateSource: %v", err)
+	}
+
+	if !eng.SyncConfigRevision() {
+		t.Fatalf("expected SyncConfigRevision to detect external source mutation")
+	}
+
+	eng.mu.Lock()
+	feedCount := len(eng.cfg.Feeds)
+	_, hasSchedule := eng.schedules["https://example.com/b.xml"]
+	eng.mu.Unlock()
+
+	if feedCount != 2 || !hasSchedule {
+		t.Fatalf("expected 2 feeds and schedule for Feed B after sync, got count=%d hasSchedule=%v", feedCount, hasSchedule)
+	}
+	if eng.SyncConfigRevision() {
+		t.Fatalf("expected subsequent SyncConfigRevision to be a no-op")
+	}
+}
+
 
