@@ -17,24 +17,37 @@ import (
 	"celerum/internal/config"
 	"celerum/internal/doctor"
 	"celerum/internal/engine"
+	"celerum/internal/mcpserver"
 	"celerum/internal/store"
 	"celerum/pkg/model"
 	"celerum/web"
 )
 
-// Server exposes Celerum's REST API, SSE stream, and embedded React SPA.
+// Options configures optional HTTP server behavior.
+type Options struct {
+	MCPReadOnly bool
+}
+
+// Server exposes Celerum's REST API, SSE stream, MCP endpoint, and embedded React SPA.
 type Server struct {
 	eng   *engine.Engine
 	store *store.Store
 	mux   *http.ServeMux
+	opts  Options
 }
 
 // New constructs a configured HTTP Server.
 func New(eng *engine.Engine, st *store.Store) *Server {
+	return NewWithOptions(eng, st, Options{})
+}
+
+// NewWithOptions constructs a configured HTTP Server with explicit options.
+func NewWithOptions(eng *engine.Engine, st *store.Store, opts Options) *Server {
 	s := &Server{
 		eng:   eng,
 		store: st,
 		mux:   http.NewServeMux(),
+		opts:  opts,
 	}
 	s.registerRoutes()
 	return s
@@ -69,6 +82,9 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("POST /api/doctor", s.handleDoctor)
 
 	s.mux.HandleFunc("GET /api/events", s.handleSSE)
+	s.mux.Handle("/mcp", mcpserver.NewHTTPHandler(s.eng, s.store, mcpserver.Options{
+		ReadOnly: s.opts.MCPReadOnly,
+	}))
 
 	// Embedded SPA fallback
 	distFS, err := fs.Sub(web.DistFS, "dist")

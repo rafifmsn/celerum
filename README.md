@@ -36,6 +36,10 @@ Top-scoring breaking event clusters are optionally enriched and summarized via a
   Single Go binary with `modernc.org/sqlite` storage (dual 7-day time TTL plus per-feed and global row caps) and a React SPA compiled into `web/dist` via `go:embed`.
   Runtime settings, feed sources, live SSE telemetry (`/api/events`), and 6-stage pipeline diagnostics (`doctor`) are manageable directly from the browser.
 
+- **MCP Server (Stdio & Streamable HTTP):**
+  Exposes `get_top_clusters`, `get_raw_feed`, `search_articles`, `manage_sources`, and non-destructive `run_doctor` tools alongside `celerum://feeds` and `celerum://clusters/latest` resources over stdio (`celerum mcp`) and `/mcp`.
+  Pass `--read-only` to `celerum mcp` (opens SQLite in `mode=ro`) or `--mcp-read-only` to `celerum run` to disable source mutations.
+
 ## Web Dashboard
 
 Running `celerum run` starts both the background pipeline and an embedded web UI (`http://localhost:8080` by default) backed by SQLite, REST endpoints, and live SSE telemetry.
@@ -128,8 +132,16 @@ For scraper trade-offs, config precedence, and operational limits, see [docs/lim
 
    Open `http://localhost:8080` in your browser to monitor live telemetry, inspect raw articles and clusters, manage sources, or hot-reload settings without restarting.
    Passing `-c` on `run` only seeds an empty SQLite database on first boot; once initialized, bare `./celerum run` resumes from SQLite.
-   
-   To overwrite an existing SQLite configuration from YAML via CLI, run `./celerum import -c celerum.yaml` (then restart `celerum run` if it is already running) or use `Sources -> Import YAML` in the dashboard.
+   To overwrite an existing SQLite configuration from YAML via CLI, run `./celerum import -c celerum.yaml` (an active `celerum run` daemon auto-reloads within 2 seconds via `config_revision`) or use `Sources -> Import YAML` in the dashboard.
+
+6. **Connect an AI agent via MCP (optional):**
+
+   ```bash
+   # Stdio transport for local MCP clients (omit --read-only to allow manage_sources)
+   ./celerum mcp -c celerum.yaml --read-only
+   ```
+
+   When `celerum run` is active, Streamable HTTP is also mounted at `/mcp` (pass `--mcp-read-only` to disable `manage_sources` over HTTP).
 
 ## Production Deployment
 
@@ -266,39 +278,22 @@ go test -v -run TestPruningEfficiency ./internal/cluster
 
 ## Operational Tuning
 
-Balancing freshness against multi-source corroboration depends on the velocity of your monitored feeds.
-Below is an architectural breakdown of buffer dynamics and recommended tuning profiles.
-Please note that this case study is provided for architectural reference and educational modeling only.
+Tuning Celerum balances alert immediacy against multi-source corroboration:
 
-### Buffer Dynamics & Exponential Decay
+- **Window & Flush Cadence (`window_duration`, `flush_interval`):**
+  Single-source articles wait in the active window until another publisher corroborates them via BM25/TF-IDF merging or their score decays ($0.5^{\Delta t / 2.0}$ half-life, dropping 50% after 2 hours).
+  Shorter windows expire uncorroborated noise faster, and shorter flush intervals deliver top-K digests sooner.
+- **Breaking Threshold (`breaking_threshold`):**
+  Two distinct Tier-1 wires on the same event score $(2 \times 3.0) + (2 \times 4.5) = 15.0$ before keyword boosts.
+  Setting `breaking_threshold: 14.0` dispatches corroborated Tier-1 stories immediately on poll while keeping single-source updates in the periodic digest.
 
-When a high-volume publisher like Bloomberg produces 18 articles in a 5-minute cycle:
-
-1. **Ring Buffer Quota:**
-   All 18 articles fit within the feed buffer (`max_articles_per_feed: 20`).
-2. **Active Window Accumulation:**
-   The articles enter the active window (`window_duration: 3h`, or longer windows like `24h` via settings) stored across SQLite and memory.
-3. **Cluster Formation & Multi-Source Lag:**
-   If none of those 18 articles cross `breaking_threshold: 12.0` (because they are single-source stories without enough cross-publisher corroboration yet), they wait in the window for corroboration.
-   If Reuters or CoinDesk publishes a matching story 15 minutes later, bounded BM25/TF-IDF cosine clustering merges it into Bloomberg's cluster, bumping the score and potentially triggering an immediate breaking alert.
-4. **Exponential Time Decay:**
-   The longer a cluster sits without fresh updates, the more its velocity score decays multiplicatively via $0.5^{\Delta t / 2.0}$ (see [docs/architecture.md](docs/architecture.md)).
-   After 2 hours without corroboration, an unverified story drops to 50 percent of its base score, naturally yielding to fresh events.
-
-### Fast-Paced Market Feeds
-
-For fast-moving domains such as financial markets, commodities, or crypto, the default 1-hour heartbeat digest may feel delayed for actionable monitoring.
-A tighter configuration profile prioritizes immediacy:
+For fast-moving markets or crypto desks, use a tighter cadence:
 
 ```yaml
 engine:
-  poll_interval: "2m" # Poll feeds every 2 minutes with adaptive 304 backoff
-  window_duration: "1h" # Expire uncorroborated stories after 60 minutes
-  flush_interval: "15m" # Flush top-K digest every 15 minutes instead of 1 hour
-  breaking_threshold: 14.0 # Multi-source Tier-1 alerts alert immediately
-  top_k: 3 # Keep periodic digest payloads short and focused
+  poll_interval: "2m"      # Adaptive 304 backoff from a 2m baseline
+  window_duration: "1h"    # Expire uncorroborated single-source noise after 60m
+  flush_interval: "15m"    # Periodic top-K digest every 15m
+  breaking_threshold: 14.0 # Multi-source Tier-1 stories alert immediately
+  top_k: 3
 ```
-
-- 15-Minute Digest Cadence ensures monitoring desks receive timely market digests without waiting an hour during quiet cycles.
-- Tighter 1-Hour Window ensures stale single-source noise exits the active cluster evaluation promptly after 60 minutes.
-- A breaking Tier-1 wire reported by two distinct Tier-1 outlets scores $(2 \times 3.0) + (2 \times 4.5) = 15.0$ before keyword boosts, immediately crossing `14.0` and delivering as soon as polled rather than waiting for any flush timer.

@@ -110,7 +110,8 @@ SQLite serves as the single runtime source of truth for both pipeline state and 
 
 - **Configuration & Feeds:**
   `sources` stores enabled/disabled feeds, tiers, categories, ETags, and live poll telemetry (`last_status`, `last_latency_ms`, `next_poll_at`, `consecutive_304`, `last_error`).
-  `settings` stores JSON runtime settings (`engine`, `keywords`, `enrichment`, `llm`, `dispatch`) bootstrapped from YAML when empty via `BootstrapConfig`.
+  `settings` stores JSON runtime settings (`runtime_config`) bootstrapped from YAML when empty via `BootstrapConfig`, plus a monotonic `config_revision` integer bumped on source/settings writes so `Engine.SyncConfigRevision` reloads external edits on the 2-second scheduler tick.
+  `NewReadOnly` opens an existing database with `file:<abs>?mode=ro` and skips schema migrations.
 - **Content & Delivery State:** `articles` persists ingested items indexed for paginated querying (`QueryArticles`), `clusters` tracks active/buffered/dispatched event groups, `dispatched_clusters` records SHA-256 cluster hashes (`ComputeClusterHash`) with summary metadata (`QueryDispatchedClustersPage`), and `webhook_retries` queues failed deliveries.
 - **Dual Time + Cap Retention (`PruneWithLimits`):** Background cleanup removes records older than `7` days while enforcing per-feed (`500` rows) and global (`10000` rows) article caps to keep SQLite queries fast on unbounded deployments.
 
@@ -139,6 +140,14 @@ Celerum pairs immediate alerts for high-velocity stories with periodic top-K dig
 - **Telemetry & Feed Inspection:** `GET /api/overview` (returns live telemetry charts, cluster windows, and engine stats), `GET /api/clusters`, and `GET /api/articles` (cursor/offset pagination and feed filtering).
 - **Source & Config Management:** CRUD routes on `/api/sources`, YAML import/export on `/api/config/yaml`, live hot-reloaded settings on `/api/settings` (`Engine.UpdateConfig`), model discovery on `POST /api/models/discover`, and non-destructive 6-stage pipeline verification on `POST /api/doctor`.
 - **Dispatch & Realtime Events:** `GET /api/dispatch` (queue + paginated history), `POST /api/dispatch/flush`, `POST /api/dispatch/retries/{id}/retry`, `DELETE /api/dispatch/retries/{id}`, and `GET /api/events` SSE streaming `EngineEvent` updates (`poll_completed`, `dispatch_updated`, `settings_updated`, `sources_updated`).
+- **Streamable HTTP MCP (`/mcp`):** `Server` mounts `mcpserver.NewHTTPHandler` on `/mcp` using `github.com/modelcontextprotocol/go-sdk`, sharing the live `Engine` and `Store` (pass `--mcp-read-only` to `celerum run` to disable `manage_sources`).
+
+## MCP Server (`internal/mcpserver`)
+
+`internal/mcpserver` exposes Celerum over both Streamable HTTP (`/mcp` in `celerum run`) and stdio (`celerum mcp`, routing all logging to `os.Stderr` to keep `os.Stdout` reserved for JSON-RPC 2.0 frames):
+
+- **Tools:** `get_top_clusters`, `get_raw_feed`, `search_articles` (results clamped to max `100` rows per call), `manage_sources` (scoped `list`/`create`/`update`/`delete` with `http`/`https` validation, omitted when `--read-only` or `--mcp-read-only` is set), and `run_doctor` (always forces `doctor.Options{Send: false}`).
+- **Resources:** `celerum://feeds` (configured sources and polling telemetry) and `celerum://clusters/latest` (ranked active-window clusters capped at `100` entries).
 
 ## Standardized Payload & Telegram Formatting
 

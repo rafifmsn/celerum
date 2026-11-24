@@ -2,6 +2,7 @@ package server
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -9,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"celerum/internal/config"
 	"celerum/internal/engine"
@@ -165,5 +168,89 @@ func TestServerAPIRoutes(t *testing.T) {
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/intelligence", nil))
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "html") {
 		t.Fatalf("GET /intelligence SPA fallback failed: %d", rec.Code)
+	}
+}
+
+func TestServerMCPEndpoint(t *testing.T) {
+	srv, st, _ := setupTestServer(t)
+	now := time.Now().UTC()
+	if _, err := st.UpsertArticles([]model.Article{{
+		ID:          "mcp-art-1",
+		FeedURL:     "https://coindesk.com/rss",
+		FeedName:    "CoinDesk",
+		FeedTier:    1,
+		Category:    "Crypto",
+		Title:       "MCP streamable test article",
+		URL:         "https://coindesk.com/mcp-test",
+		PublishedAt: now,
+		IngestedAt:  now,
+	}}); err != nil {
+		t.Fatalf("UpsertArticles: %v", err)
+	}
+
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	ctx := context.Background()
+	client := mcp.NewClient(&mcp.Implementation{Name: "http-test-client", Version: "1.0.0"}, nil)
+	cs, err := client.Connect(ctx, &mcp.StreamableClientTransport{
+		Endpoint:             ts.URL + "/mcp",
+		HTTPClient:           ts.Client(),
+		DisableStandaloneSSE: true,
+	}, nil)
+	if err != nil {
+		t.Fatalf("Streamable HTTP connect: %v", err)
+	}
+	defer cs.Close()
+
+	tools, err := cs.ListTools(ctx, nil)
+	if err != nil {
+		t.Fatalf("ListTools: %v", err)
+	}
+	if len(tools.Tools) != 5 {
+		t.Fatalf("expected 5 MCP tools on /mcp, got %d", len(tools.Tools))
+	}
+
+	res, err := cs.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "get_raw_feed",
+		Arguments: map[string]any{"category": "Crypto"},
+	})
+	if err != nil || res.IsError {
+		t.Fatalf("get_raw_feed over /mcp failed: err=%v res=%+v", err, res)
+	}
+	if !strings.Contains(res.Content[0].(*mcp.TextContent).Text, "MCP streamable test article") {
+		t.Fatalf("expected seeded article in /mcp get_raw_feed response")
+	}
+}
+
+func TestServerMCPReadOnlyOption(t *testing.T) {
+	_, st, eng := setupTestServer(t)
+	roSrv := NewWithOptions(eng, st, Options{MCPReadOnly: true})
+	ts := httptest.NewServer(roSrv.Handler())
+	defer ts.Close()
+
+	ctx := context.Background()
+	client := mcp.NewClient(&mcp.Implementation{Name: "http-ro-client", Version: "1.0.0"}, nil)
+	cs, err := client.Connect(ctx, &mcp.StreamableClientTransport{
+		Endpoint:             ts.URL + "/mcp",
+		HTTPClient:           ts.Client(),
+		DisableStandaloneSSE: true,
+	}, nil)
+	if err != nil {
+		t.Fatalf("Streamable HTTP connect: %v", err)
+	}
+	defer cs.Close()
+
+	tools, err := cs.ListTools(ctx, nil)
+	if err != nil {
+		t.Fatalf("ListTools: %v", err)
+	}
+	for _, tl := range tools.Tools {
+		if tl.Name == "manage_sources" {
+			t.Fatalf("expected manage_sources disabled when MCPReadOnly=true")
+		}
+	}
+	if len(tools.Tools) != 4 {
+		t.Fatalf("expected 4 tools with MCPReadOnly=true, got %d", len(tools.Tools))
 	}
 }

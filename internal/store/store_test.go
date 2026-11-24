@@ -257,4 +257,73 @@ func TestDispatchedClustersPagination(t *testing.T) {
 	}
 }
 
+func TestStoreReadOnlyAndConfigRevision(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "rev_ro.db")
+	st, err := New(dbPath)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer st.Close()
+
+	r0, err := st.GetConfigRevision()
+	if err != nil || r0 != 0 {
+		t.Fatalf("expected initial revision 0, got %d (err=%v)", r0, err)
+	}
+
+	created, err := st.CreateSource(SourceRecord{
+		Name:    "CoinDesk",
+		URL:     "https://coindesk.com/rss",
+		Tier:    1,
+		Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("CreateSource: %v", err)
+	}
+	r1, _ := st.GetConfigRevision()
+	if r1 <= r0 {
+		t.Fatalf("expected revision increment after CreateSource: r0=%d r1=%d", r0, r1)
+	}
+
+	created.Tier = 2
+	if _, err := st.UpdateSource(created); err != nil {
+		t.Fatalf("UpdateSource: %v", err)
+	}
+	r2, _ := st.GetConfigRevision()
+	if r2 <= r1 {
+		t.Fatalf("expected revision increment after UpdateSource: r1=%d r2=%d", r1, r2)
+	}
+
+	if err := st.SaveRuntimeSettings(RuntimeSettings{Engine: config.DefaultConfig().Engine}); err != nil {
+		t.Fatalf("SaveRuntimeSettings: %v", err)
+	}
+	r3, _ := st.GetConfigRevision()
+	if r3 <= r2 {
+		t.Fatalf("expected revision increment after SaveRuntimeSettings: r2=%d r3=%d", r2, r3)
+	}
+
+	if err := st.DeleteSource(created.ID); err != nil {
+		t.Fatalf("DeleteSource: %v", err)
+	}
+	r4, _ := st.GetConfigRevision()
+	if r4 <= r3 {
+		t.Fatalf("expected revision increment after DeleteSource: r3=%d r4=%d", r3, r4)
+	}
+
+	ro, err := NewReadOnly(dbPath)
+	if err != nil {
+		t.Fatalf("NewReadOnly: %v", err)
+	}
+	defer ro.Close()
+
+	if !ro.IsReadOnly() {
+		t.Fatalf("expected IsReadOnly() == true")
+	}
+	if _, err := ro.GetConfigRevision(); err != nil {
+		t.Fatalf("read-only GetConfigRevision failed: %v", err)
+	}
+	if _, err := ro.CreateSource(SourceRecord{Name: "Blocked", URL: "https://example.com/rss", Enabled: true}); err == nil {
+		t.Fatalf("expected write via read-only store to fail")
+	}
+}
+
 

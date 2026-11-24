@@ -4,8 +4,10 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -22,8 +24,9 @@ const (
 
 // Store provides persistence using embedded SQLite.
 type Store struct {
-	db     *sql.DB
-	dbPath string
+	db       *sql.DB
+	dbPath   string
+	readOnly bool
 }
 
 // WebhookRetry represents a queued webhook delivery attempt.
@@ -219,6 +222,47 @@ func New(dbPath string) (*Store, error) {
 	}
 
 	return st, nil
+}
+
+// NewReadOnly opens an existing SQLite database in OS-enforced read-only mode without running migrations.
+func NewReadOnly(dbPath string) (*Store, error) {
+	if dbPath == "" {
+		dbPath = "celerum.db"
+	}
+	if _, err := os.Stat(dbPath); err != nil {
+		return nil, fmt.Errorf("stat sqlite database at %s: %w", dbPath, err)
+	}
+	absPath, err := filepath.Abs(dbPath)
+	if err != nil {
+		return nil, fmt.Errorf("resolving sqlite path %s: %w", dbPath, err)
+	}
+	uri := (&url.URL{
+		Scheme:   "file",
+		Path:     filepath.ToSlash(absPath),
+		RawQuery: "mode=ro",
+	}).String()
+
+	db, err := sql.Open("sqlite", uri)
+	if err != nil {
+		return nil, fmt.Errorf("opening read-only sqlite database at %s: %w", dbPath, err)
+	}
+	db.SetMaxOpenConns(1)
+
+	if _, err := db.Exec("PRAGMA busy_timeout = 5000;"); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("configuring read-only busy_timeout: %w", err)
+	}
+	if _, err := db.Exec("SELECT 1;"); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("verifying read-only sqlite handle: %w", err)
+	}
+
+	return &Store{db: db, dbPath: dbPath, readOnly: true}, nil
+}
+
+// IsReadOnly reports whether the Store was opened in read-only mode.
+func (s *Store) IsReadOnly() bool {
+	return s.readOnly
 }
 
 func (s *Store) migrateColumns() error {
@@ -448,6 +492,7 @@ func (s *Store) CreateSource(src SourceRecord) (SourceRecord, error) {
 	}
 	id, _ := res.LastInsertId()
 	src.ID = id
+	_ = s.bumpConfigRevision(s.db)
 	return src, nil
 }
 
@@ -483,6 +528,7 @@ func (s *Store) UpdateSource(src SourceRecord) (SourceRecord, error) {
 	if affected == 0 {
 		return SourceRecord{}, sql.ErrNoRows
 	}
+	_ = s.bumpConfigRevision(s.db)
 	return src, nil
 }
 
@@ -497,7 +543,40 @@ func (s *Store) DeleteSource(id int64) error {
 		return fmt.Errorf("deleting source %d: %w", id, err)
 	}
 	_, _ = s.db.Exec(`DELETE FROM feed_state WHERE feed_url = ?;`, feedURL)
+	_ = s.bumpConfigRevision(s.db)
 	return nil
+}
+
+type sqlExecer interface {
+	Exec(query string, args ...any) (sql.Result, error)
+}
+
+func (s *Store) bumpConfigRevision(execer sqlExecer) error {
+	_, err := execer.Exec(`
+		INSERT INTO settings (key, value_json, updated_at)
+		VALUES ('config_revision', '1', ?)
+		ON CONFLICT(key) DO UPDATE SET
+			value_json = CAST(CAST(settings.value_json AS INTEGER) + 1 AS TEXT),
+			updated_at = excluded.updated_at;
+	`, time.Now().Unix())
+	return err
+}
+
+// GetConfigRevision returns the monotonic configuration revision stored in SQLite.
+func (s *Store) GetConfigRevision() (int64, error) {
+	var raw string
+	err := s.db.QueryRow(`SELECT value_json FROM settings WHERE key = 'config_revision';`).Scan(&raw)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return 0, nil
+		}
+		return 0, fmt.Errorf("reading config revision: %w", err)
+	}
+	rev, err := strconv.ParseInt(strings.TrimSpace(raw), 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("parsing config revision %q: %w", raw, err)
+	}
+	return rev, nil
 }
 
 // SaveRuntimeSettings persists engine, keyword, enrichment, LLM, and dispatch settings as JSON.
@@ -514,6 +593,7 @@ func (s *Store) SaveRuntimeSettings(rt RuntimeSettings) error {
 	if err != nil {
 		return fmt.Errorf("saving runtime settings: %w", err)
 	}
+	_ = s.bumpConfigRevision(s.db)
 	return nil
 }
 
@@ -745,6 +825,10 @@ func (s *Store) ImportConfig(cfg *config.Config, replaceSources bool) error {
 			_ = tx.Rollback()
 			return fmt.Errorf("upserting source %s: %w", f.URL, err)
 		}
+	}
+	if err := s.bumpConfigRevision(tx); err != nil {
+		_ = tx.Rollback()
+		return fmt.Errorf("bumping config revision: %w", err)
 	}
 	return tx.Commit()
 }

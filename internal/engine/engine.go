@@ -50,6 +50,7 @@ type Engine struct {
 	feedBuffers      map[string][]model.Article
 	schedules        map[string]*feedSchedule
 	lastFlushTime    time.Time
+	lastConfigRev    int64
 	lastClusterStats cluster.ClusterStats
 	lastRawCount     int
 	lastShingledCnt  int
@@ -112,6 +113,9 @@ func (e *Engine) hydrateFromStore() {
 			}
 		}
 	}
+	if rev, err := e.store.GetConfigRevision(); err == nil {
+		e.lastConfigRev = rev
+	}
 }
 
 // SubscribeEvents registers a channel for real-time SSE updates.
@@ -163,18 +167,54 @@ func (e *Engine) ReloadConfig(cfg *config.Config) {
 
 	e.ingester.UpdateConfig(cfg)
 
+	var latestRev int64
+	hasRev := false
+	if e.store != nil {
+		if rev, err := e.store.GetConfigRevision(); err == nil {
+			latestRev = rev
+			hasRev = true
+		}
+	}
+
 	e.mu.Lock()
 	e.cfg = cfg
 	e.scorer = sc
 	e.scraper = scr
 	e.summarizer = sum
 	e.dispatchers = disp
+	if hasRev {
+		e.lastConfigRev = latestRev
+	}
 	for _, f := range cfg.Feeds {
 		if _, ok := e.schedules[f.URL]; !ok {
 			e.schedules[f.URL] = &feedSchedule{}
 		}
 	}
 	e.mu.Unlock()
+}
+
+// SyncConfigRevision reloads Engine configuration if SQLite config_revision advanced externally.
+func (e *Engine) SyncConfigRevision() bool {
+	if e.store == nil {
+		return false
+	}
+	rev, err := e.store.GetConfigRevision()
+	if err != nil {
+		return false
+	}
+	e.mu.Lock()
+	changed := rev != e.lastConfigRev
+	e.mu.Unlock()
+	if !changed {
+		return false
+	}
+	cfg, err := e.store.ExportToConfig()
+	if err != nil {
+		log.Printf("[warn] config reload export error: %v", err)
+		return false
+	}
+	e.ReloadConfig(cfg)
+	return true
 }
 
 // ComputeClusterHash generates a deterministic SHA-256 fingerprint of a cluster.
@@ -853,6 +893,8 @@ func (e *Engine) Run(ctx context.Context) error {
 }
 
 func (e *Engine) runDueFeeds(ctx context.Context, now time.Time) {
+	e.SyncConfigRevision()
+
 	e.mu.Lock()
 	var due []config.FeedConfig
 	for _, f := range e.cfg.Feeds {

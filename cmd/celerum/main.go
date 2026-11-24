@@ -17,25 +17,32 @@ import (
 	"celerum/internal/dispatch"
 	"celerum/internal/doctor"
 	"celerum/internal/engine"
+	"celerum/internal/mcpserver"
 	"celerum/internal/server"
 	"celerum/internal/store"
 	"celerum/pkg/model"
+
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 const usage = `Celerum - Algorithmic RSS Intelligence Engine
 
 Usage:
-  celerum init [-c config.yaml]               Create default configuration file
-  celerum import [-c config.yaml]             Overwrite SQLite settings and sources from YAML
-  celerum check [-c config.yaml]              Dry-run feed clustering and scoring to stdout
-  celerum doctor [-c config.yaml] [--send]    Run 6-stage non-destructive diagnostics
-  celerum test telegram [-c config.yaml]      Send test alert to verify Telegram credentials
-  celerum run [-c config.yaml] [-addr :8080]  Run adaptive polling daemon and web dashboard
+  celerum init [-c config.yaml]                            Create default configuration file
+  celerum import [-c config.yaml]                          Overwrite SQLite settings and sources from YAML
+  celerum check [-c config.yaml]                           Dry-run feed clustering and scoring to stdout
+  celerum doctor [-c config.yaml] [--send]                 Run 6-stage non-destructive diagnostics
+  celerum test telegram [-c config.yaml]                   Send test alert to verify Telegram credentials
+  celerum mcp [-c config.yaml] [--read-only]               Run MCP server over stdio
+  celerum run [-c config.yaml] [-addr :8080] [--mcp-read-only]
+                                                           Run adaptive polling daemon and web dashboard
 
 Flags:
-  -c string      Path to configuration file (default "celerum.yaml")
-  -addr string   Dashboard HTTP listen address (default ":8080" or CELERUM_ADDR)
-  --send         Send a live verification alert in Stage 6 of 'doctor'
+  -c string        Path to configuration file (default "celerum.yaml")
+  -addr string     Dashboard HTTP listen address (default ":8080" or CELERUM_ADDR)
+  --send           Send a live verification alert in Stage 6 of 'doctor'
+  --read-only      Disable mutating MCP tools and open SQLite read-only in 'mcp'
+  --mcp-read-only  Disable mutating MCP tools on /mcp in 'run'
 `
 
 func main() {
@@ -58,6 +65,8 @@ func main() {
 		runDoctor(subArgs)
 	case "test":
 		runTest(subArgs)
+	case "mcp":
+		runMCP(subArgs)
 	case "run":
 		runDaemon(subArgs)
 	case "help", "-h", "--help":
@@ -325,22 +334,12 @@ func runTest(args []string) {
 	}
 }
 
-func runDaemon(args []string) {
-	fs := flag.NewFlagSet("run", flag.ExitOnError)
-	configPath := fs.String("c", "celerum.yaml", "Path to config file")
-	defaultAddr := os.Getenv("CELERUM_ADDR")
-	if defaultAddr == "" {
-		defaultAddr = ":8080"
-	}
-	addr := fs.String("addr", defaultAddr, "HTTP dashboard listen address")
-	_ = fs.Parse(args)
-
+func resolveStoreInputs(configPath string) (*config.Config, string, error) {
 	var yamlCfg *config.Config
-	if _, err := os.Stat(*configPath); err == nil {
-		loaded, loadErr := config.Load(*configPath)
+	if _, err := os.Stat(configPath); err == nil {
+		loaded, loadErr := config.Load(configPath)
 		if loadErr != nil {
-			fmt.Fprintf(os.Stderr, "error loading config: %v\n", loadErr)
-			os.Exit(1)
+			return nil, "", fmt.Errorf("error loading config: %w", loadErr)
 		}
 		yamlCfg = loaded
 	} else {
@@ -350,6 +349,82 @@ func runDaemon(args []string) {
 	dbPath := "data/celerum.db"
 	if yamlCfg != nil && yamlCfg.Database.Path != "" {
 		dbPath = yamlCfg.Database.Path
+	}
+	return yamlCfg, dbPath, nil
+}
+
+func runMCP(args []string) {
+	// Stdio transport reserves os.Stdout strictly for JSON-RPC frames.
+	log.SetOutput(os.Stderr)
+
+	fs := flag.NewFlagSet("mcp", flag.ExitOnError)
+	fs.SetOutput(os.Stderr)
+	configPath := fs.String("c", "celerum.yaml", "Path to config file")
+	readOnly := fs.Bool("read-only", false, "Open SQLite read-only and disable mutating MCP tools")
+	_ = fs.Parse(args)
+
+	yamlCfg, dbPath, err := resolveStoreInputs(*configPath)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+
+	var st *store.Store
+	var cfg *config.Config
+	if *readOnly {
+		st, err = store.NewReadOnly(dbPath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error opening read-only store: %v\n", err)
+			os.Exit(1)
+		}
+		cfg, err = st.ExportToConfig()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error loading sqlite config: %v\n", err)
+			_ = st.Close()
+			os.Exit(1)
+		}
+	} else {
+		st, err = store.New(dbPath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error initializing store: %v\n", err)
+			os.Exit(1)
+		}
+		cfg, err = st.BootstrapConfig(yamlCfg)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error bootstrapping sqlite config: %v\n", err)
+			_ = st.Close()
+			os.Exit(1)
+		}
+	}
+	defer st.Close()
+
+	eng := engine.New(cfg, st)
+	srv := mcpserver.New(eng, st, mcpserver.Options{ReadOnly: *readOnly})
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	if err := srv.Run(ctx, &mcp.StdioTransport{}); err != nil && !errors.Is(err, context.Canceled) {
+		fmt.Fprintf(os.Stderr, "mcp server error: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+func runDaemon(args []string) {
+	fs := flag.NewFlagSet("run", flag.ExitOnError)
+	configPath := fs.String("c", "celerum.yaml", "Path to config file")
+	defaultAddr := os.Getenv("CELERUM_ADDR")
+	if defaultAddr == "" {
+		defaultAddr = ":8080"
+	}
+	addr := fs.String("addr", defaultAddr, "HTTP dashboard listen address")
+	mcpReadOnly := fs.Bool("mcp-read-only", false, "Disable mutating MCP tools on /mcp")
+	_ = fs.Parse(args)
+
+	yamlCfg, dbPath, err := resolveStoreInputs(*configPath)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
 	}
 
 	st, err := store.New(dbPath)
@@ -366,7 +441,7 @@ func runDaemon(args []string) {
 	}
 
 	eng := engine.New(cfg, st)
-	srv := server.New(eng, st)
+	srv := server.NewWithOptions(eng, st, server.Options{MCPReadOnly: *mcpReadOnly})
 
 	httpServer := &http.Server{
 		Addr:              *addr,
