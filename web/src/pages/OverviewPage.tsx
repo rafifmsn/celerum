@@ -13,6 +13,7 @@ import {
   Zap,
 } from 'lucide-react'
 import { BarcodeStrip, SemiCircularGauge, WaveCombChart } from '@/components/Charts'
+import { FormattedSummary } from '@/components/FormattedSummary'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
@@ -86,11 +87,6 @@ export function OverviewPage({
   const rawSummary =
     activeCluster?.summary ||
     'No synthesized paragraph recorded yet; inspect linked publisher coverage below.'
-  const isLongSummary = rawSummary.length > 220
-  const displaySummary =
-    isLongSummary && !summaryExpanded
-      ? `${rawSummary.slice(0, 220).replace(/\s+\S*$/, '')}...`
-      : rawSummary
 
   const handleFlush = async () => {
     setFlushing(true)
@@ -441,18 +437,12 @@ export function OverviewPage({
               {activeCluster.headline}
             </h3>
 
-            <div className="space-y-1.5">
-              <p className="text-[13px] text-[#A0A0AB] leading-relaxed">{displaySummary}</p>
-              {isLongSummary && (
-                <button
-                  type="button"
-                  onClick={() => setSummaryExpanded((prev) => !prev)}
-                  className="text-[12px] font-medium text-white hover:underline cursor-pointer"
-                >
-                  {summaryExpanded ? 'Read less' : 'Read more'}
-                </button>
-              )}
-            </div>
+            <FormattedSummary
+              text={rawSummary}
+              maxChars={220}
+              expanded={summaryExpanded}
+              onToggleExpand={() => setSummaryExpanded((prev) => !prev)}
+            />
 
             <div className="border-t border-[#24242C] pt-3 space-y-2">
               <div className="text-[11px] uppercase tracking-wider text-[#6B6B76]">

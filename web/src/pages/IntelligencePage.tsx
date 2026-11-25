@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { ChevronDown, ChevronRight, ExternalLink, Layers, Sparkles } from 'lucide-react'
 import { BarcodeStrip } from '@/components/Charts'
+import { FormattedSummary } from '@/components/FormattedSummary'
 import { Badge } from '@/components/ui/badge'
 import { Card } from '@/components/ui/card'
 import { Select } from '@/components/ui/select'
@@ -120,9 +121,7 @@ export function IntelligencePage({ searchQuery, streamTick }: IntelligencePagePr
                     </h3>
 
                     {cluster.summary && (
-                      <p className="text-[13px] text-[#A0A0AB] leading-relaxed">
-                        {cluster.summary}
-                      </p>
+                      <FormattedSummary text={cluster.summary} maxChars={320} />
                     )}
 
                     <div className="pt-1">

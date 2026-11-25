@@ -194,7 +194,7 @@ func buildSystemPrompt(customPrompt, language string) string {
 	return fmt.Sprintf(`You are an elite financial news analyst and market intelligence editor.
 Your task is to rephrase and synthesize the provided source into a high-density, authoritative news briefing.
 Do NOT generate a headline, title, or sources section; the headline and sources are handled programmatically by the system.
-Output clean formatting suitable for Telegram: use dense paragraphs and bullet points (•) where appropriate for distinct metrics.
+Output clean formatting suitable for Telegram: separate distinct paragraphs with a blank line, and put each bullet point (•) on its own line when listing distinct metrics.
 Do NOT use markdown headers (# or ##), code blocks, or conversational commentary.
 
 Target language for all text: %s.
