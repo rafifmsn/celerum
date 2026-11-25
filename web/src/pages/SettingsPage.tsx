@@ -407,7 +407,7 @@ export function SettingsPage() {
         <Card className="p-5 space-y-4">
           <h2 className="text-[15px] font-semibold text-white">Engine Timing, Scoring & Keywords</h2>
 
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-3">
             <div>
               <label className="block text-[12px] text-[#9A9AA6] mb-1.5">Poll Interval</label>
               <Input
@@ -458,10 +458,46 @@ export function SettingsPage() {
                 }
               />
             </div>
+            <div>
+              <label className="block text-[12px] text-[#9A9AA6] mb-1.5">Top-K Flush</label>
+              <Input
+                type="number"
+                min={1}
+                step={1}
+                value={draft.engine.top_k}
+                onChange={(e) => {
+                  const val = Number(e.target.value)
+                  setDraft({
+                    ...draft,
+                    engine: {
+                      ...draft.engine,
+                      top_k: Number.isFinite(val) && val >= 1 ? Math.floor(val) : 1,
+                    },
+                  })
+                }}
+              />
+            </div>
           </div>
 
-          <div className="space-y-2 pt-2">
+          <div className="space-y-2.5 pt-2">
             <label className="block text-[12px] text-[#9A9AA6]">Boosted Keywords</label>
+            <div className="flex gap-2 max-w-sm">
+              <Input
+                value={newKeyword}
+                onChange={(e) => setNewKeyword(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault()
+                    handleAddKeyword()
+                  }
+                }}
+                placeholder="Add boosted keyword..."
+              />
+              <Button variant="secondary" onClick={handleAddKeyword}>
+                <Plus className="w-3.5 h-3.5" />
+                Add
+              </Button>
+            </div>
             <div className="flex flex-wrap gap-2">
               {draft.keywords.boost.map((kw) => (
                 <span
@@ -479,23 +515,6 @@ export function SettingsPage() {
                   </button>
                 </span>
               ))}
-            </div>
-            <div className="flex gap-2 pt-1 max-w-sm">
-              <Input
-                value={newKeyword}
-                onChange={(e) => setNewKeyword(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') {
-                    e.preventDefault()
-                    handleAddKeyword()
-                  }
-                }}
-                placeholder="Add boosted keyword..."
-              />
-              <Button variant="secondary" onClick={handleAddKeyword}>
-                <Plus className="w-3.5 h-3.5" />
-                Add
-              </Button>
             </div>
           </div>
         </Card>
