@@ -157,3 +157,93 @@ feeds:
 		t.Fatalf("expected 4 tools in --read-only stdio mode, got %d", len(toolsRO.Tools))
 	}
 }
+
+func TestResolveStoreInputs_AnchorsRelativeDBAndRespectsOverrides(t *testing.T) {
+	tmpDir := t.TempDir()
+	subDir := filepath.Join(tmpDir, "nested")
+	if err := os.MkdirAll(subDir, 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	cfgPath := filepath.Join(subDir, "celerum.yaml")
+	cfgContent := "database:\n  path: \"data/celerum.db\"\n"
+	if err := os.WriteFile(cfgPath, []byte(cfgContent), 0644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	_, gotDB, err := resolveStoreInputs(storeInputOptions{
+		configPath:      cfgPath,
+		configExplicit:  true,
+		requireExisting: true,
+	})
+	if err != nil {
+		t.Fatalf("resolveStoreInputs with config: %v", err)
+	}
+	wantDB := filepath.Join(subDir, "data", "celerum.db")
+	if gotDB != wantDB {
+		t.Fatalf("expected config-relative db %s, got %s", wantDB, gotDB)
+	}
+
+	envDB := filepath.Join(tmpDir, "env.db")
+	t.Setenv("CELERUM_DB", envDB)
+	_, gotEnvDB, err := resolveStoreInputs(storeInputOptions{
+		configPath:      cfgPath,
+		configExplicit:  true,
+		requireExisting: true,
+	})
+	if err != nil {
+		t.Fatalf("resolveStoreInputs with CELERUM_DB: %v", err)
+	}
+	if gotEnvDB != envDB {
+		t.Fatalf("expected CELERUM_DB %s, got %s", envDB, gotEnvDB)
+	}
+
+	flagDB := filepath.Join(tmpDir, "flag.db")
+	_, gotFlagDB, err := resolveStoreInputs(storeInputOptions{
+		configPath:      cfgPath,
+		configExplicit:  true,
+		dbFlag:          flagDB,
+		requireExisting: true,
+	})
+	if err != nil {
+		t.Fatalf("resolveStoreInputs with --db: %v", err)
+	}
+	if gotFlagDB != flagDB {
+		t.Fatalf("expected --db %s, got %s", flagDB, gotFlagDB)
+	}
+}
+
+func TestResolveStoreInputs_ExplicitMissingConfigErrors(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "missing.yaml")
+	if _, _, err := resolveStoreInputs(storeInputOptions{
+		configPath:     missing,
+		configExplicit: true,
+	}); err == nil {
+		t.Fatal("expected error for explicit missing config")
+	}
+}
+
+func TestMCPStdio_FailsFastInEmptyDirectoryWithoutCreatingDB(t *testing.T) {
+	tmpDir := t.TempDir()
+	binPath := filepath.Join(tmpDir, "celerum-test-bin")
+	buildCmd := exec.Command("go", "build", "-o", binPath, ".")
+	if out, err := buildCmd.CombinedOutput(); err != nil {
+		t.Fatalf("go build failed: %v\n%s", err, string(out))
+	}
+
+	emptyCwd := filepath.Join(tmpDir, "random-agent-cwd")
+	if err := os.MkdirAll(emptyCwd, 0755); err != nil {
+		t.Fatalf("mkdir emptyCwd: %v", err)
+	}
+
+	cmd := exec.Command(binPath, "mcp")
+	cmd.Dir = emptyCwd
+	cmd.Env = append(os.Environ(), "CELERUM_DB=")
+	if err := cmd.Run(); err == nil {
+		t.Fatal("expected celerum mcp in empty directory to exit non-zero")
+	}
+
+	if _, err := os.Stat(filepath.Join(emptyCwd, "data")); !os.IsNotExist(err) {
+		t.Fatalf("expected no data/ directory created in %s, stat err=%v", emptyCwd, err)
+	}
+}

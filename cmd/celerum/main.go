@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -33,12 +34,13 @@ Usage:
   celerum check [-c config.yaml]                           Dry-run feed clustering and scoring to stdout
   celerum doctor [-c config.yaml] [--send]                 Run 6-stage non-destructive diagnostics
   celerum test telegram [-c config.yaml]                   Send test alert to verify Telegram credentials
-  celerum mcp [-c config.yaml] [--read-only]               Run MCP server over stdio
-  celerum run [-c config.yaml] [-addr :8080] [--mcp-read-only]
+  celerum mcp [-c config.yaml] [--db path] [--read-only]   Run MCP server over stdio
+  celerum run [-c config.yaml] [--db path] [-addr :8080] [--mcp-read-only]
                                                            Run adaptive polling daemon and web dashboard
 
 Flags:
   -c string        Path to configuration file (default "celerum.yaml")
+  --db string      Path to SQLite database (overrides config and CELERUM_DB)
   -addr string     Dashboard HTTP listen address (default ":8080" or CELERUM_ADDR)
   --send           Send a live verification alert in Stage 6 of 'doctor'
   --read-only      Disable mutating MCP tools and open SQLite read-only in 'mcp'
@@ -334,22 +336,59 @@ func runTest(args []string) {
 	}
 }
 
-func resolveStoreInputs(configPath string) (*config.Config, string, error) {
+type storeInputOptions struct {
+	configPath      string
+	configExplicit  bool
+	dbFlag          string
+	requireExisting bool
+}
+
+func flagWasSet(fs *flag.FlagSet, name string) bool {
+	set := false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == name {
+			set = true
+		}
+	})
+	return set
+}
+
+func resolveStoreInputs(opts storeInputOptions) (*config.Config, string, error) {
 	var yamlCfg *config.Config
-	if _, err := os.Stat(configPath); err == nil {
-		loaded, loadErr := config.Load(configPath)
+	if _, err := os.Stat(opts.configPath); err == nil {
+		loaded, loadErr := config.Load(opts.configPath)
 		if loadErr != nil {
 			return nil, "", fmt.Errorf("error loading config: %w", loadErr)
 		}
 		yamlCfg = loaded
+	} else if opts.configExplicit {
+		return nil, "", fmt.Errorf("config file not found: %s", opts.configPath)
 	} else {
 		config.LoadDotEnv(".")
 	}
 
-	dbPath := "data/celerum.db"
-	if yamlCfg != nil && yamlCfg.Database.Path != "" {
-		dbPath = yamlCfg.Database.Path
+	dbOverride := opts.dbFlag
+	if dbOverride == "" {
+		dbOverride = os.Getenv("CELERUM_DB")
 	}
+
+	dbPath := "data/celerum.db"
+	switch {
+	case dbOverride != "":
+		dbPath = dbOverride
+	case yamlCfg != nil && yamlCfg.Database.Path != "":
+		dbPath = yamlCfg.Database.Path
+		if !filepath.IsAbs(dbPath) {
+			dbPath = filepath.Join(filepath.Dir(opts.configPath), dbPath)
+		}
+	}
+
+	if opts.requireExisting && yamlCfg == nil && dbOverride == "" {
+		if _, err := os.Stat(dbPath); err != nil {
+			return nil, "", fmt.Errorf("no config or database found (%s missing); pass -c, --db, or set CELERUM_DB", dbPath)
+		}
+	}
+
 	return yamlCfg, dbPath, nil
 }
 
@@ -360,10 +399,16 @@ func runMCP(args []string) {
 	fs := flag.NewFlagSet("mcp", flag.ExitOnError)
 	fs.SetOutput(os.Stderr)
 	configPath := fs.String("c", "celerum.yaml", "Path to config file")
+	dbFlag := fs.String("db", "", "Path to SQLite database")
 	readOnly := fs.Bool("read-only", false, "Open SQLite read-only and disable mutating MCP tools")
 	_ = fs.Parse(args)
 
-	yamlCfg, dbPath, err := resolveStoreInputs(*configPath)
+	yamlCfg, dbPath, err := resolveStoreInputs(storeInputOptions{
+		configPath:      *configPath,
+		configExplicit:  flagWasSet(fs, "c"),
+		dbFlag:          *dbFlag,
+		requireExisting: true,
+	})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
@@ -413,6 +458,7 @@ func runMCP(args []string) {
 func runDaemon(args []string) {
 	fs := flag.NewFlagSet("run", flag.ExitOnError)
 	configPath := fs.String("c", "celerum.yaml", "Path to config file")
+	dbFlag := fs.String("db", "", "Path to SQLite database")
 	defaultAddr := os.Getenv("CELERUM_ADDR")
 	if defaultAddr == "" {
 		defaultAddr = ":8080"
@@ -421,7 +467,11 @@ func runDaemon(args []string) {
 	mcpReadOnly := fs.Bool("mcp-read-only", false, "Disable mutating MCP tools on /mcp")
 	_ = fs.Parse(args)
 
-	yamlCfg, dbPath, err := resolveStoreInputs(*configPath)
+	yamlCfg, dbPath, err := resolveStoreInputs(storeInputOptions{
+		configPath:     *configPath,
+		configExplicit: flagWasSet(fs, "c"),
+		dbFlag:         *dbFlag,
+	})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)

@@ -138,9 +138,12 @@ For scraper trade-offs, config precedence, and operational limits, see [docs/lim
 
    ```bash
    # Stdio transport for local MCP clients (omit --read-only to allow manage_sources)
-   ./celerum mcp -c celerum.yaml --read-only
+   ./celerum mcp -c /path/to/celerum.yaml --read-only
+   # Or point directly at an existing SQLite database (also configurable via CELERUM_DB)
+   ./celerum mcp --db /path/to/data/celerum.db --read-only
    ```
 
+   Relative `database.path` entries in `-c` resolve relative to the config file's directory, and `celerum mcp` fails fast if launched outside a configured directory without `-c`, `--db`, or `CELERUM_DB`.
    When `celerum run` is active, Streamable HTTP is also mounted at `/mcp` (pass `--mcp-read-only` to disable `manage_sources` over HTTP).
 
 ## Production Deployment
