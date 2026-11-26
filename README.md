@@ -1,54 +1,51 @@
-# Celerum
+<p align="center">
+  <img src="./celerum-thumb-1.jpg" alt="Celerum" width="100%" />
+</p>
 
-[![CI](https://github.com/rafifmsn/celerum/actions/workflows/ci.yml/badge.svg)](https://github.com/rafifmsn/celerum/actions/workflows/ci.yml)
-[![Go Version](https://img.shields.io/badge/Go-1.25+-00ADD8?logo=go&logoColor=white)](https://go.dev/)
-[![License](https://img.shields.io/github/license/rafifmsn/celerum)](LICENSE)
+<p align="center">
+  <a href="https://github.com/rafifmsn/celerum/actions/workflows/ci.yml">
+    <img src="https://github.com/rafifmsn/celerum/actions/workflows/ci.yml/badge.svg" alt="CI" />
+  </a>
+  <a href="https://go.dev/">
+    <img src="https://img.shields.io/badge/Go-1.25+-00ADD8?logo=go&logoColor=white" alt="Go Version" />
+  </a>
+  <a href="./LICENSE">
+    <img src="https://img.shields.io/github/license/rafifmsn/celerum" alt="License" />
+  </a>
+</p>
 
-A self-hosted, deterministic news intelligence engine written in Go with an embedded real-time web dashboard.
-Celerum collects high-volume RSS and Atom feeds with Chrome TLS fingerprinting (`utls`) and RFC 7232 HTTP conditional polling (`304 Not Modified`).
-Instead of relying on costly vector embeddings, Celerum uses token shingling, inverted index candidate pruning, local BM25/TF-IDF cosine similarity, bounded agglomerative merging, and Disjoint-Set Union (Union-Find) clustering.
-Top-scoring breaking event clusters are optionally enriched and summarized via an LLM, served over a REST and SSE dashboard, and dispatched to Telegram or HTTP webhooks.
+<p align="center">
+  Celerum collects high-volume RSS and Atom feeds with Chrome TLS fingerprinting and RFC 7232 HTTP conditional polling.<br />
+  Instead of relying on costly vector embeddings, it uses token shingling, inverted index candidate pruning, local BM25/TF-IDF cosine similarity, bounded agglomerative merging, and Disjoint-Set Union clustering. Top-scoring breaking event clusters are optionally enriched and summarized via an LLM, served over a REST and SSE dashboard, and dispatched to Telegram or HTTP webhooks.
+</p>
 
-![Celerum Thumbnail](./celerum-thumb.jpg)
+<p align="center">
+  <a href="#key-features">Key Features</a> ·
+  <a href="#dashboard">Dashboard</a> ·
+  <a href="#architecture">Architecture</a> ·
+  <a href="#quickstart">Quickstart</a> ·
+  <a href="#deployment">Deployment</a> ·
+  <a href="#testing">Testing</a> ·
+  <a href="#benchmarks">Benchmarks</a>
+</p>
 
 ## Key Features
 
-- **RFC 7232 Conditional Ingestion & Adaptive Scheduling:**
-  Tracks `ETag`, `Last-Modified`, `Retry-After`, and `Cache-Control: max-age` headers in embedded SQLite (`sources`).
-  TLS handshakes mimic a modern Chrome ClientHello via `utls`, and unmodified `304 Not Modified` feeds back off exponentially up to 30 minutes (`1.5^consecutive_304`) with randomized jitter.
+- **Conditional Polling:** Chrome TLS fingerprinting (`utls`) and RFC 7232 `ETag`/`Last-Modified` cursors with `304` backoff up to 30 minutes.
+- **Zero-Embedding Clustering:** Stop-word stripping, stemming, 64-bit FNV-1a shingle pruning, and BM25/TF-IDF cosine clustering with Union-Find and linkage guards.
+- **Velocity Scoring:** Scores unique-source corroboration weighted by inverted publisher tiers (`Tier 1` > `Tier 2` > `Tier 3+`), keyword boosts, and a 2-hour half-life decay.
+- **Hybrid Dispatch & Retries:** Immediate alerts above `breaking_threshold`, periodic `flush_interval` digests for top-K clusters, SQLite deduplication, and exponential-backoff retries.
+- **AI Enrichment with Safe Fallback:** OpenAI-compatible `/chat/completions` (OpenRouter, DeepSeek, OpenAI, Groq, Ollama) paired with `none`, `direct`, `jina`, or `firecrawl` scrapers; falls back to raw RSS links on timeout.
+- **Single-Binary UI & Storage:** Zero-CGO SQLite (`modernc.org/sqlite`) with 7-day retention and an embedded React + SSE dashboard (`/api/events`).
+- **MCP Server:** Exposes `get_top_clusters`, `get_raw_feed`, `search_articles`, `manage_sources`, and `run_doctor` plus `celerum://feeds` and `celerum://clusters/latest` over stdio (`celerum mcp`, `--read-only`) or `/mcp` (`--mcp-read-only`).
 
-- **Algorithmic Clustering (Zero Embedding Costs):**
-  Cleans HTML and URLs, strips stop-words, applies lightweight stemming, and builds 64-bit FNV-1a unigram/bigram shingles alongside BM25/TF-IDF vectors weighted 2x toward headlines.
-  An inverted shingle index prunes candidate pairs sharing fewer than 2 shingles before computing normalized cosine similarity with centroid and complete-linkage guards to prevent mega-cluster chaining.
+## Dashboard
 
-- **Inverted Tier Velocity Scoring & Exponential Decay:**
-  Heuristic scoring rewards unique source corroboration (`3.0`), inverted publisher tiers (`Tier 1 = 4.5`, `Tier 2 = 3.0`, `Tier 3+ = 1.5`), and word-boundary keyword boosts (`2.0`) scaled by an exponential half-life time decay (`HalfLifeHours = 2.0`).
+Running `celerum run` starts both the background pipeline and an embedded web UI (`http://localhost:8080` by default) backed by SQLite, REST endpoints, and live SSE telemetry. The dashboard includes views for Overview telemetry and AI synthesis briefings, Intelligence cluster inspection, paginated Raw Feed browsing, Sources health and YAML import/export, Dispatch queues and history, and live Settings with inline System Doctor checks (additional captures are stored under [docs/screens/](docs/screens/)).
 
-- **Hybrid Alert Cadence & Persistent Delivery:**
-  Clusters crossing `breaking_threshold` alert immediately while lower-scoring top-K clusters buffer for the periodic flush interval (`flush_interval`).
-  Delivered SHA-256 cluster fingerprints persist in `dispatched_clusters`, and failed webhook or Telegram deliveries queue in `webhook_retries` for automatic background retry with exponential backoff.
+![Celerum Thumbnail 2](./celerum-thumb-2.jpg)
 
-- **Resilient AI Synthesis & Enrichment:**
-  Supports OpenRouter, DeepSeek, OpenAI, Groq, and Ollama through OpenAI-compatible `/chat/completions` endpoints, paired with `none`, `direct`, `jina`, or `firecrawl` article scrapers.
-  Strict config validation catches missing API keys early, while runtime provider timeouts fall back cleanly to raw RSS links (`enriched: false`) so breaking alerts are never dropped.
-
-- **Zero-CGO Embedded Dashboard & Storage:**
-  Single Go binary with `modernc.org/sqlite` storage (dual 7-day time TTL plus per-feed and global row caps) and a React SPA compiled into `web/dist` via `go:embed`.
-  Runtime settings, feed sources, live SSE telemetry (`/api/events`), and 6-stage pipeline diagnostics (`doctor`) are manageable directly from the browser.
-
-- **MCP Server (Stdio & Streamable HTTP):**
-  Exposes `get_top_clusters`, `get_raw_feed`, `search_articles`, `manage_sources`, and non-destructive `run_doctor` tools alongside `celerum://feeds` and `celerum://clusters/latest` resources over stdio (`celerum mcp`) and `/mcp`.
-  Pass `--read-only` to `celerum mcp` (opens SQLite in `mode=ro`) or `--mcp-read-only` to `celerum run` to disable source mutations.
-
-## Web Dashboard
-
-Running `celerum run` starts both the background pipeline and an embedded web UI (`http://localhost:8080` by default) backed by SQLite, REST endpoints, and live SSE telemetry.
-
-![Celerum Overview Dashboard](./docs/screens/overview.png)
-
-The dashboard includes views for Overview telemetry and AI synthesis briefings, Intelligence cluster inspection, paginated Raw Feed browsing, Sources health and YAML import/export, Dispatch queues and history, and live Settings with inline System Doctor checks (additional captures are stored under [docs/screens/](docs/screens/)).
-
-## Architecture Overview
+## Architecture
 
 ```mermaid
 flowchart LR
@@ -63,87 +60,58 @@ flowchart LR
 
 **How it works:**
 
-1. **uTLS Conditional Ingestion & Adaptive Polling:**
-   Enabled feeds from SQLite `sources` are polled concurrently using cached `ETag` and `Last-Modified` cursors.
-   When a feed returns `304 Not Modified`, Celerum honors `Retry-After` / `Cache-Control` hints or backs off by `1.5^consecutive_304` (capped at 30 minutes) with 10 percent jitter, resetting immediately when new articles arrive.
-   Blocklisted URLs and empty titles are dropped while keeping up to `max_articles_per_feed` items per feed cycle, including short breaking headlines in raw storage.
-
-2. **Shingle Pruning & Bounded TF-IDF Clustering:**
-   Articles with at least 4 non-stopword tokens enter an in-memory clustering window where title and description tokens are stemmed and hashed into sorted 64-bit FNV-1a shingles.
-   An inverted shingle index skips pairs with fewer than 2 shared shingles before scoring candidate pairs using L2-normalized BM25/TF-IDF vectors (title terms weighted 2x) and merging strongest pairs with Union-Find, a centroid guard (`0.85 * threshold`), and a complete-linkage floor (`0.60 * threshold`).
-
-3. **Inverted Tier Velocity Scoring:**
-   Clusters are scored across unique sources rather than duplicate feed items, giving Tier 1 wires higher authority than Tier 2 or Tier 3+ feeds and applying word-boundary keyword matching and a 2-hour half-life exponential decay.
-
-4. **Hybrid Alert Cadence & Persistent Deduplication:**
-   Clusters meeting `breaking_threshold` are dispatched immediately, while remaining top-K clusters are held as buffered candidates until the `flush_interval` timer fires or an operator triggers a manual flush.
-   Every dispatched cluster writes its SHA-256 URL-set fingerprint to `dispatched_clusters` in SQLite to prevent duplicate alerts across restarts.
-
-5. **Constrained Enrichment, Fallback & Retry Queue:**
-   When LLM synthesis is enabled, Celerum optionally scrapes up to 3 articles per cluster concurrently (15-second timeout) using `direct`, `jina`, or `firecrawl`, then invokes `/chat/completions` (30-second timeout).
-   If scraping or summarization fails, alerts still ship with RSS metadata (`enriched: false`), and failed webhook or Telegram HTTP deliveries persist in `webhook_retries` for background retry (or manual retry from the UI).
+1. **Poll & Filter:** Active `sources` are fetched concurrently with `uTLS` and cached `ETag`/`Last-Modified` headers; `304` responses back off exponentially, while blocklisted URLs and empty titles are dropped.
+2. **Cluster:** Articles with 4+ non-stopword tokens are stemmed and hashed into FNV-1a shingles; pairs sharing 2+ shingles are scored via BM25/TF-IDF cosine similarity (2x headline weight) and merged using Union-Find with centroid (`0.85x`) and complete-linkage (`0.60x`) guards.
+3. **Score:** Clusters are ranked by unique-source corroboration, inverted publisher tiers, word-boundary keyword boosts, and a 2-hour half-life decay.
+4. **Enrich (Optional):** Clusters can scrape up to 3 articles (`direct`, `jina`, or `firecrawl`, 15s timeout) and summarize via `/chat/completions` (30s timeout), falling back to raw RSS links on failure.
+5. **Dispatch & Retry:** Breaking clusters send immediately and remaining top-K clusters flush on `flush_interval`; SHA-256 URL-set fingerprints in `dispatched_clusters` prevent duplicates and failed deliveries queue in `webhook_retries`.
 
 For the full mathematical formulation, database schema, and API overview, see [docs/architecture.md](docs/architecture.md).
 For scraper trade-offs, config precedence, and operational limits, see [docs/limitations.md](docs/limitations.md).
 
 ## Quickstart
 
-1. **Build the frontend and Go binary:**
+1. **Build frontend & Go binary** (Docker builds both automatically via [Dockerfile](Dockerfile)):
 
    ```bash
    npm --prefix web install && npm --prefix web run build
    go build -o celerum ./cmd/celerum
    ```
 
-   Building from source requires compiling `web/dist` first so `go:embed` can embed the React SPA, whereas Docker builds both stages automatically via [Dockerfile](Dockerfile).
-
-2. **Initialize configuration and environment (optional):**
+2. **Initialize config & env (optional):**
 
    ```bash
    ./celerum init
    cp .env.example .env
    ```
 
-   Celerum automatically loads `.env` from the config directory on startup.
-   You can also skip `celerum.yaml` entirely for a zero-config first boot and configure feeds, keys, and targets directly in the web dashboard, because SQLite becomes the runtime source of truth once seeded.
+   You can skip `celerum.yaml` and configure everything in the dashboard, or inspect [celerum.yaml.example](celerum.yaml.example) for all fields.
 
-3. **Run non-destructive pipeline diagnostics:**
-
-   ```bash
-   ./celerum doctor -c celerum.yaml
-   ```
-
-   `doctor` runs a 6-stage verification (config validation, SQLite WAL storage, feed reachability, article scraper, LLM `/chat/completions`, and dispatch targets).
-   Pass `--send` to deliver a synthetic test alert through configured dispatchers, or use `./celerum test telegram` for Telegram-only verification.
-
-4. **Dry-run clustering check (zero external cost):**
+3. **Verify & dry-run (optional):**
 
    ```bash
-   ./celerum check -c celerum.yaml
+   ./celerum doctor -c celerum.yaml   # 6-stage check (add --send for a test alert)
+   ./celerum check -c celerum.yaml    # dry-run clustering without dispatching or LLM calls
    ```
 
-   Polls active feeds once and prints formed clusters and velocity scores to stdout without dispatching alerts or calling an LLM.
-
-5. **Start the engine and web dashboard:**
+4. **Start engine & dashboard:**
 
    ```bash
    ./celerum run -c celerum.yaml -addr :8080
    ```
 
-   Open `http://localhost:8080` in your browser to monitor live telemetry, inspect raw articles and clusters, manage sources, or hot-reload settings without restarting.
-   Passing `-c` on `run` only seeds an empty SQLite database on first boot; once initialized, bare `./celerum run` resumes from SQLite.
-   To overwrite an existing SQLite configuration from YAML via CLI, run `./celerum import -c celerum.yaml` (an active `celerum run` daemon auto-reloads within 2 seconds via `config_revision`) or use `Sources -> Import YAML` in the dashboard.
+   Open `http://localhost:8080`. `-c` seeds SQLite on first boot only; after that `./celerum run` resumes from SQLite (use `./celerum import -c celerum.yaml` or `Sources -> Import YAML` to overwrite from YAML).
 
-6. **Connect an AI agent via MCP (optional):**
+5. **Connect an AI agent via MCP (optional):**
 
    ```bash
-   # Stdio transport for local MCP clients (omit --read-only to allow manage_sources)
-   ./celerum mcp -c celerum.yaml --read-only
+   ./celerum mcp -c /path/to/celerum.yaml --read-only
+   ./celerum mcp --db /path/to/data/celerum.db --read-only   # or set CELERUM_DB
    ```
 
-   When `celerum run` is active, Streamable HTTP is also mounted at `/mcp` (pass `--mcp-read-only` to disable `manage_sources` over HTTP).
+   Relative `database.path` entries resolve against `-c`'s directory, and `celerum mcp` fails fast outside a configured directory without `-c`, `--db`, or `CELERUM_DB`. Streamable HTTP is also mounted at `/mcp` during `celerum run` (`--mcp-read-only` disables `manage_sources`).
 
-## Production Deployment
+## Deployment
 
 For 24/7 operation on a server or VPS, run Celerum via Docker Compose with persistent `./data` volume storage.
 
@@ -168,74 +136,6 @@ For 24/7 operation on a server or VPS, run Celerum via Docker Compose with persi
    docker compose logs -f celerum
    docker compose down
    ```
-
-## Configuration Reference
-
-Celerum uses `celerum.yaml` as an initial bootstrap seed (and for UI YAML import/export).
-
-```yaml
-version: "1"
-
-database:
-  path: "data/celerum.db"
-
-engine:
-  poll_interval: "5m"
-  window_duration: "3h"
-  flush_interval: "1h"
-  max_articles_per_feed: 20
-  similarity_threshold: 0.28
-  breaking_threshold: 12.0
-  top_k: 5
-
-feeds:
-  - name: "CoinDesk"
-    url: "https://www.coindesk.com/arc/outboundfeeds/rss/"
-    category: "Crypto"
-    tier: 1
-    enabled: true
-  - name: "Cointelegraph"
-    url: "https://cointelegraph.com/rss"
-    category: "Crypto"
-    tier: 2
-    enabled: true
-
-keywords:
-  boost:
-    - "etf"
-    - "sec"
-    - "fed"
-    - "ath"
-    - "acquisition"
-  blocklist:
-    - "/sponsored/"
-    - "/press-releases/"
-
-enrichment:
-  scraper: "none" # none | direct | jina | firecrawl
-  jina_api_key: "${JINA_API_KEY}"
-  firecrawl_api_key: "${FIRECRAWL_API_KEY}"
-
-llm:
-  enabled: true
-  provider: "openrouter" # openrouter | deepseek | openai | groq | ollama
-  base_url: "" # optional, defaults to provider endpoint
-  model: "meta-llama/llama-3.1-8b-instruct"
-  api_key: "${LLM_API_KEY}"
-  language: "en"
-  system_prompt: "" # optional custom prompt with {{language}} placeholder
-
-dispatch:
-  telegram:
-    enabled: true
-    bot_token: "${TELEGRAM_BOT_TOKEN}"
-    chat_id: "${TELEGRAM_CHAT_ID}"
-  webhook:
-    enabled: false
-    url: "https://example.com/api/news"
-    headers:
-      Authorization: "Bearer ${WEBHOOK_SECRET}"
-```
 
 ## Testing
 
@@ -274,26 +174,4 @@ go test -bench=. -benchmem -count=3 ./internal/cluster ./internal/score
 
 # Measure inverted index pairwise pruning efficiency
 go test -v -run TestPruningEfficiency ./internal/cluster
-```
-
-## Operational Tuning
-
-Tuning Celerum balances alert immediacy against multi-source corroboration:
-
-- **Window & Flush Cadence (`window_duration`, `flush_interval`):**
-  Single-source articles wait in the active window until another publisher corroborates them via BM25/TF-IDF merging or their score decays ($0.5^{\Delta t / 2.0}$ half-life, dropping 50% after 2 hours).
-  Shorter windows expire uncorroborated noise faster, and shorter flush intervals deliver top-K digests sooner.
-- **Breaking Threshold (`breaking_threshold`):**
-  Two distinct Tier-1 wires on the same event score $(2 \times 3.0) + (2 \times 4.5) = 15.0$ before keyword boosts.
-  Setting `breaking_threshold: 14.0` dispatches corroborated Tier-1 stories immediately on poll while keeping single-source updates in the periodic digest.
-
-For fast-moving markets or crypto desks, use a tighter cadence:
-
-```yaml
-engine:
-  poll_interval: "2m"      # Adaptive 304 backoff from a 2m baseline
-  window_duration: "1h"    # Expire uncorroborated single-source noise after 60m
-  flush_interval: "15m"    # Periodic top-K digest every 15m
-  breaking_threshold: 14.0 # Multi-source Tier-1 stories alert immediately
-  top_k: 3
 ```

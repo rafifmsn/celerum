@@ -359,6 +359,7 @@ export function SettingsPage() {
                 }
               >
                 <option value="none">RSS Description Only</option>
+                <option value="direct">Direct HTTP</option>
                 <option value="jina">Jina Reader</option>
                 <option value="firecrawl">Firecrawl</option>
               </Select>
