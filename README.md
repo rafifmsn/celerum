@@ -15,8 +15,7 @@
 </p>
 
 <p align="center">
-  Celerum collects high-volume RSS and Atom feeds with Chrome TLS fingerprinting and RFC 7232 HTTP conditional polling.<br />
-  Instead of relying on costly vector embeddings, it uses token shingling, inverted index candidate pruning, local BM25/TF-IDF cosine similarity, bounded agglomerative merging, and Disjoint-Set Union clustering. Top-scoring breaking event clusters are optionally enriched and summarized via an LLM, served over a REST and SSE dashboard, and dispatched to Telegram or HTTP webhooks.
+  Celerum collects high-volume RSS and Atom feeds with Chrome TLS fingerprinting and RFC 7232 HTTP conditional polling. Instead of relying on costly vector embeddings, it uses token shingling, inverted index candidate pruning, local BM25/TF-IDF cosine similarity, bounded agglomerative merging, and Disjoint-Set Union clustering. Top-scoring breaking event clusters are optionally enriched and summarized via an LLM, served over a REST and SSE dashboard, and dispatched to Telegram or HTTP webhooks.
 </p>
 
 <p align="center">
