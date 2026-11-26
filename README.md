@@ -1,15 +1,23 @@
-# Celerum
+<p align="center">
+  <img src="./celerum-thumb-1.jpg" alt="Celerum" width="100%" />
+</p>
 
-[![CI](https://github.com/rafifmsn/celerum/actions/workflows/ci.yml/badge.svg)](https://github.com/rafifmsn/celerum/actions/workflows/ci.yml)
-[![Go Version](https://img.shields.io/badge/Go-1.25+-00ADD8?logo=go&logoColor=white)](https://go.dev/)
-[![License](https://img.shields.io/github/license/rafifmsn/celerum)](LICENSE)
+<p align="center">
+  <a href="https://github.com/rafifmsn/celerum/actions/workflows/ci.yml">
+    <img src="https://github.com/rafifmsn/celerum/actions/workflows/ci.yml/badge.svg" alt="CI" />
+  </a>
+  <a href="https://go.dev/">
+    <img src="https://img.shields.io/badge/Go-1.25+-00ADD8?logo=go&logoColor=white" alt="Go Version" />
+  </a>
+  <a href="./LICENSE">
+    <img src="https://img.shields.io/github/license/rafifmsn/celerum" alt="License" />
+  </a>
+</p>
 
-A self-hosted, deterministic news intelligence engine written in Go with an embedded real-time web dashboard.
-Celerum collects high-volume RSS and Atom feeds with Chrome TLS fingerprinting (`utls`) and RFC 7232 HTTP conditional polling (`304 Not Modified`).
-Instead of relying on costly vector embeddings, Celerum uses token shingling, inverted index candidate pruning, local BM25/TF-IDF cosine similarity, bounded agglomerative merging, and Disjoint-Set Union (Union-Find) clustering.
-Top-scoring breaking event clusters are optionally enriched and summarized via an LLM, served over a REST and SSE dashboard, and dispatched to Telegram or HTTP webhooks.
-
-![Celerum Thumbnail](./celerum-thumb.jpg)
+<p align="center">
+  Celerum collects high-volume RSS and Atom feeds with Chrome TLS fingerprinting and RFC 7232 HTTP conditional polling.<br />
+  Instead of relying on costly vector embeddings, it uses token shingling, inverted index candidate pruning, local BM25/TF-IDF cosine similarity, bounded agglomerative merging, and Disjoint-Set Union clustering. Top-scoring breaking event clusters are optionally enriched and summarized via an LLM, served over a REST and SSE dashboard, and dispatched to Telegram or HTTP webhooks.
+</p>
 
 ## Key Features
 
@@ -42,11 +50,9 @@ Top-scoring breaking event clusters are optionally enriched and summarized via a
 
 ## Web Dashboard
 
-Running `celerum run` starts both the background pipeline and an embedded web UI (`http://localhost:8080` by default) backed by SQLite, REST endpoints, and live SSE telemetry.
+Running `celerum run` starts both the background pipeline and an embedded web UI (`http://localhost:8080` by default) backed by SQLite, REST endpoints, and live SSE telemetry. The dashboard includes views for Overview telemetry and AI synthesis briefings, Intelligence cluster inspection, paginated Raw Feed browsing, Sources health and YAML import/export, Dispatch queues and history, and live Settings with inline System Doctor checks (additional captures are stored under [docs/screens/](docs/screens/)).
 
-![Celerum Overview Dashboard](./docs/screens/overview.png)
-
-The dashboard includes views for Overview telemetry and AI synthesis briefings, Intelligence cluster inspection, paginated Raw Feed browsing, Sources health and YAML import/export, Dispatch queues and history, and live Settings with inline System Doctor checks (additional captures are stored under [docs/screens/](docs/screens/)).
+![Celerum Thumbnail 2](./celerum-thumb-2.jpg)
 
 ## Architecture Overview
 
@@ -146,7 +152,7 @@ For scraper trade-offs, config precedence, and operational limits, see [docs/lim
    Relative `database.path` entries in `-c` resolve relative to the config file's directory, and `celerum mcp` fails fast if launched outside a configured directory without `-c`, `--db`, or `CELERUM_DB`.
    When `celerum run` is active, Streamable HTTP is also mounted at `/mcp` (pass `--mcp-read-only` to disable `manage_sources` over HTTP).
 
-## Production Deployment
+## Deployment
 
 For 24/7 operation on a server or VPS, run Celerum via Docker Compose with persistent `./data` volume storage.
 
@@ -172,7 +178,7 @@ For 24/7 operation on a server or VPS, run Celerum via Docker Compose with persi
    docker compose down
    ```
 
-## Configuration Reference
+## Configuration
 
 Celerum uses `celerum.yaml` as an initial bootstrap seed (and for UI YAML import/export).
 
@@ -277,26 +283,4 @@ go test -bench=. -benchmem -count=3 ./internal/cluster ./internal/score
 
 # Measure inverted index pairwise pruning efficiency
 go test -v -run TestPruningEfficiency ./internal/cluster
-```
-
-## Operational Tuning
-
-Tuning Celerum balances alert immediacy against multi-source corroboration:
-
-- **Window & Flush Cadence (`window_duration`, `flush_interval`):**
-  Single-source articles wait in the active window until another publisher corroborates them via BM25/TF-IDF merging or their score decays ($0.5^{\Delta t / 2.0}$ half-life, dropping 50% after 2 hours).
-  Shorter windows expire uncorroborated noise faster, and shorter flush intervals deliver top-K digests sooner.
-- **Breaking Threshold (`breaking_threshold`):**
-  Two distinct Tier-1 wires on the same event score $(2 \times 3.0) + (2 \times 4.5) = 15.0$ before keyword boosts.
-  Setting `breaking_threshold: 14.0` dispatches corroborated Tier-1 stories immediately on poll while keeping single-source updates in the periodic digest.
-
-For fast-moving markets or crypto desks, use a tighter cadence:
-
-```yaml
-engine:
-  poll_interval: "2m"      # Adaptive 304 backoff from a 2m baseline
-  window_duration: "1h"    # Expire uncorroborated single-source noise after 60m
-  flush_interval: "15m"    # Periodic top-K digest every 15m
-  breaking_threshold: 14.0 # Multi-source Tier-1 stories alert immediately
-  top_k: 3
 ```
