@@ -1,6 +1,7 @@
 package store
 
 import (
+	"database/sql"
 	"fmt"
 	"path/filepath"
 	"testing"
@@ -323,6 +324,144 @@ func TestStoreReadOnlyAndConfigRevision(t *testing.T) {
 	}
 	if _, err := ro.CreateSource(SourceRecord{Name: "Blocked", URL: "https://example.com/rss", Enabled: true}); err == nil {
 		t.Fatalf("expected write via read-only store to fail")
+	}
+}
+
+func TestStoreArticleCursorAndSeqMigration(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "legacy_articles.db")
+
+	// Simulate an existing DB created before articles.seq existed.
+	rawDB, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	_, err = rawDB.Exec(`
+		CREATE TABLE articles (
+			id TEXT PRIMARY KEY,
+			feed_url TEXT NOT NULL,
+			feed_name TEXT NOT NULL DEFAULT '',
+			feed_tier INTEGER NOT NULL DEFAULT 1,
+			category TEXT NOT NULL DEFAULT '',
+			title TEXT NOT NULL,
+			description TEXT NOT NULL DEFAULT '',
+			url TEXT NOT NULL,
+			image_url TEXT NOT NULL DEFAULT '',
+			published_at INTEGER NOT NULL,
+			ingested_at INTEGER NOT NULL
+		);
+		INSERT INTO articles (id, feed_url, feed_name, category, title, url, published_at, ingested_at)
+		VALUES
+			('art-1', 'https://a.com/rss', 'FeedA', 'Crypto', 'First', 'https://a.com/1', 1000, 1000),
+			('art-2', 'https://a.com/rss', 'FeedA', 'Crypto', 'Second', 'https://a.com/2', 2000, 2000),
+			('art-3', 'https://a.com/rss', 'FeedA', 'Crypto', 'Third', 'https://a.com/3', 2000, 2000);
+	`)
+	_ = rawDB.Close()
+	if err != nil {
+		t.Fatalf("seed legacy articles: %v", err)
+	}
+
+	st, err := New(dbPath)
+	if err != nil {
+		t.Fatalf("New after legacy db: %v", err)
+	}
+	defer st.Close()
+
+	// Initial keyset page (limit 2) should return art-3 then art-2 (same timestamps, id DESC tie-break).
+	res1, err := st.QueryArticlesCursor(ArticleCursorParams{Limit: 2, IncludeMetadata: true})
+	if err != nil {
+		t.Fatalf("QueryArticlesCursor page 1: %v", err)
+	}
+	if !res1.HasMore || len(res1.Items) != 2 || res1.TotalCount != 3 || res1.MaxSeq != 3 {
+		t.Fatalf("unexpected res1: %+v", res1)
+	}
+	if res1.Items[0].Article.ID != "art-3" || res1.Items[1].Article.ID != "art-2" {
+		t.Fatalf("unexpected tie-break order: got %s, %s", res1.Items[0].Article.ID, res1.Items[1].Article.ID)
+	}
+
+	// Simulate concurrent insert of a new article AND deletion of the anchor row art-2 (like Prune).
+	if _, err := st.UpsertArticles([]model.Article{{
+		ID:          "art-4-backdated",
+		FeedURL:     "https://a.com/rss",
+		FeedName:    "FeedA",
+		Category:    "Crypto",
+		Title:       "Backdated arrival",
+		URL:         "https://a.com/4",
+		PublishedAt: time.Unix(500, 0).UTC(),
+		IngestedAt:  time.Unix(3000, 0).UTC(),
+	}}); err != nil {
+		t.Fatalf("UpsertArticles: %v", err)
+	}
+	if _, err := st.db.Exec(`DELETE FROM articles WHERE id = 'art-2';`); err != nil {
+		t.Fatalf("delete anchor row: %v", err)
+	}
+
+	// Backward cursor from art-2 still advances cleanly past deleted anchor to art-1 and art-4-backdated.
+	anchor := res1.Items[1].Article
+	res2, err := st.QueryArticlesCursor(ArticleCursorParams{
+		Limit: 5,
+		Before: &ArticleCursorPos{
+			PublishedAt: anchor.PublishedAt.Unix(),
+			IngestedAt:  anchor.IngestedAt.Unix(),
+			ID:          anchor.ID,
+		},
+	})
+	if err != nil {
+		t.Fatalf("QueryArticlesCursor page 2: %v", err)
+	}
+	if res2.HasMore || len(res2.Items) != 2 {
+		t.Fatalf("expected 2 remaining older rows, got len=%d hasMore=%v", len(res2.Items), res2.HasMore)
+	}
+	if res2.Items[0].Article.ID != "art-1" || res2.Items[1].Article.ID != "art-4-backdated" {
+		t.Fatalf("unexpected page 2 items: got %s, %s", res2.Items[0].Article.ID, res2.Items[1].Article.ID)
+	}
+
+	// Forward tailing from res1.MaxSeq (3) catches art-4-backdated despite its older PublishedAt.
+	afterSeq := res1.MaxSeq
+	tail, err := st.QueryArticlesCursor(ArticleCursorParams{
+		Limit:    5,
+		AfterSeq: &afterSeq,
+	})
+	if err != nil {
+		t.Fatalf("QueryArticlesCursor after_seq: %v", err)
+	}
+	if len(tail.Items) != 1 || tail.Items[0].Article.ID != "art-4-backdated" || tail.MaxSeq != 4 {
+		t.Fatalf("unexpected tail result: %+v", tail)
+	}
+
+	// Simulate total retention wipe + store restart: article_seq high-water mark must survive.
+	if _, err := st.db.Exec(`DELETE FROM articles;`); err != nil {
+		t.Fatalf("wipe articles: %v", err)
+	}
+	_ = st.Close()
+
+	st2, err := New(dbPath)
+	if err != nil {
+		t.Fatalf("reopen store after wipe: %v", err)
+	}
+	defer st2.Close()
+
+	if _, err := st2.UpsertArticles([]model.Article{{
+		ID:          "art-5-after-wipe",
+		FeedURL:     "https://a.com/rss",
+		FeedName:    "FeedA",
+		Category:    "Crypto",
+		Title:       "Post-wipe arrival",
+		URL:         "https://a.com/5",
+		PublishedAt: time.Unix(4000, 0).UTC(),
+		IngestedAt:  time.Unix(4000, 0).UTC(),
+	}}); err != nil {
+		t.Fatalf("UpsertArticles post-wipe: %v", err)
+	}
+
+	postWipeTail, err := st2.QueryArticlesCursor(ArticleCursorParams{
+		Limit:    5,
+		AfterSeq: &tail.MaxSeq,
+	})
+	if err != nil {
+		t.Fatalf("QueryArticlesCursor post-wipe: %v", err)
+	}
+	if len(postWipeTail.Items) != 1 || postWipeTail.Items[0].Article.ID != "art-5-after-wipe" || postWipeTail.MaxSeq <= tail.MaxSeq {
+		t.Fatalf("expected post-wipe seq > %d, got %+v", tail.MaxSeq, postWipeTail)
 	}
 }
 
