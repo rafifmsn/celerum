@@ -2,7 +2,10 @@ package mcpserver
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -56,27 +59,34 @@ type ClustersOutput struct {
 
 // GetRawFeedInput defines pagination and filter parameters for get_raw_feed.
 type GetRawFeedInput struct {
-	Category string `json:"category,omitempty" jsonschema:"Optional category filter"`
-	Source   string `json:"source,omitempty" jsonschema:"Optional feed name or feed URL filter"`
-	Page     int    `json:"page,omitempty" jsonschema:"1-based page number (default 1)"`
-	Limit    int    `json:"limit,omitempty" jsonschema:"Page size (default 20, max 100)"`
+	Category    string `json:"category,omitempty" jsonschema:"Optional category filter"`
+	Source      string `json:"source,omitempty" jsonschema:"Optional feed name or feed URL filter"`
+	Cursor      string `json:"cursor,omitempty" jsonschema:"Opaque cursor from next_cursor to fetch the next older slice"`
+	AfterCursor string `json:"after_cursor,omitempty" jsonschema:"Opaque watermark from head_cursor to fetch newly ingested articles in arrival order"`
+	Page        int    `json:"page,omitempty" jsonschema:"1-based page number for legacy offset paging (default 1; do not combine with cursors)"`
+	Limit       int    `json:"limit,omitempty" jsonschema:"Page size (default 20, max 100)"`
 }
 
 // SearchArticlesInput defines keyword search parameters for search_articles.
 type SearchArticlesInput struct {
-	Query    string `json:"query" jsonschema:"Required search query matched against title, description, or source name"`
-	Category string `json:"category,omitempty" jsonschema:"Optional category filter"`
-	Source   string `json:"source,omitempty" jsonschema:"Optional feed name or feed URL filter"`
-	Page     int    `json:"page,omitempty" jsonschema:"1-based page number (default 1)"`
-	Limit    int    `json:"limit,omitempty" jsonschema:"Page size (default 20, max 100)"`
+	Query       string `json:"query" jsonschema:"Required search query matched against title, description, or source name"`
+	Category    string `json:"category,omitempty" jsonschema:"Optional category filter"`
+	Source      string `json:"source,omitempty" jsonschema:"Optional feed name or feed URL filter"`
+	Cursor      string `json:"cursor,omitempty" jsonschema:"Opaque cursor from next_cursor to fetch the next older slice"`
+	AfterCursor string `json:"after_cursor,omitempty" jsonschema:"Opaque watermark from head_cursor to fetch newly ingested matches in arrival order"`
+	Page        int    `json:"page,omitempty" jsonschema:"1-based page number for legacy offset paging (default 1; do not combine with cursors)"`
+	Limit       int    `json:"limit,omitempty" jsonschema:"Page size (default 20, max 100)"`
 }
 
 // ArticlesOutput is the structured response for article listing and search tools.
 type ArticlesOutput struct {
 	Articles   []model.Article `json:"articles"`
 	TotalCount int             `json:"total_count"`
-	Page       int             `json:"page"`
+	Page       int             `json:"page,omitempty"`
 	Limit      int             `json:"limit"`
+	NextCursor string          `json:"next_cursor,omitempty"`
+	HeadCursor string          `json:"head_cursor,omitempty"`
+	HasMore    bool            `json:"has_more"`
 	Categories []string        `json:"categories"`
 	Sources    []string        `json:"sources"`
 }
@@ -128,9 +138,9 @@ func New(eng *engine.Engine, st *store.Store, opts Options) *mcp.Server {
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "get_raw_feed",
 		Title:       "Get Raw Feed",
-		Description: "Browse persisted raw RSS/Atom articles ordered by recency with optional category and source filters.",
+		Description: "Browse persisted raw RSS/Atom articles ordered by recency with optional category and source filters. Pass next_cursor as cursor to walk older slices, or head_cursor as after_cursor to catch newly ingested arrivals.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in GetRawFeedInput) (*mcp.CallToolResult, ArticlesOutput, error) {
-		out, err := queryArticlesOutput(st, in.Category, in.Source, "", in.Page, in.Limit)
+		out, err := queryArticlesOutput(st, in.Category, in.Source, "", in.Page, in.Cursor, in.AfterCursor, in.Limit)
 		if err != nil {
 			return nil, ArticlesOutput{}, err
 		}
@@ -140,12 +150,12 @@ func New(eng *engine.Engine, st *store.Store, opts Options) *mcp.Server {
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "search_articles",
 		Title:       "Search Articles",
-		Description: "Search persisted articles by keyword across title, description, and feed name with optional category/source filters.",
+		Description: "Search persisted articles by keyword across title, description, and feed name with optional category/source filters. Supports cursor for older pages and after_cursor (from head_cursor) for newly ingested matches.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in SearchArticlesInput) (*mcp.CallToolResult, ArticlesOutput, error) {
 		if strings.TrimSpace(in.Query) == "" {
 			return nil, ArticlesOutput{}, errors.New("query is required")
 		}
-		out, err := queryArticlesOutput(st, in.Category, in.Source, in.Query, in.Page, in.Limit)
+		out, err := queryArticlesOutput(st, in.Category, in.Source, in.Query, in.Page, in.Cursor, in.AfterCursor, in.Limit)
 		if err != nil {
 			return nil, ArticlesOutput{}, err
 		}
@@ -300,37 +310,184 @@ func buildClustersOutput(eng *engine.Engine, in GetClustersInput) (ClustersOutpu
 	}, nil
 }
 
-func queryArticlesOutput(st *store.Store, category, source, search string, page, limit int) (ArticlesOutput, error) {
+type articleCursorPayload struct {
+	Kind        string `json:"k"`
+	PublishedAt int64  `json:"pub,omitempty"`
+	IngestedAt  int64  `json:"ing,omitempty"`
+	ID          string `json:"id,omitempty"`
+	Seq         int64  `json:"seq,omitempty"`
+	FilterHash  string `json:"fh"`
+}
+
+func articleFilterHash(category, source, search string) string {
+	norm := func(v string, dropAll bool) string {
+		clean := strings.ToLower(strings.TrimSpace(v))
+		if dropAll && clean == "all" {
+			return ""
+		}
+		return clean
+	}
+	raw := norm(category, true) + "\x00" + norm(source, true) + "\x00" + norm(search, false)
+	sum := sha256.Sum256([]byte(raw))
+	return hex.EncodeToString(sum[:8])
+}
+
+func encodeArticleCursor(p articleCursorPayload) string {
+	b, _ := json.Marshal(p)
+	return base64.RawURLEncoding.EncodeToString(b)
+}
+
+func decodeArticleCursor(raw, expectedKind, expectedFilterHash string) (articleCursorPayload, error) {
+	b, err := base64.RawURLEncoding.DecodeString(strings.TrimSpace(raw))
+	if err != nil {
+		return articleCursorPayload{}, fmt.Errorf("invalid cursor encoding: %w", err)
+	}
+	var p articleCursorPayload
+	if err := json.Unmarshal(b, &p); err != nil {
+		return articleCursorPayload{}, fmt.Errorf("invalid cursor payload: %w", err)
+	}
+	if p.Kind != expectedKind {
+		return articleCursorPayload{}, fmt.Errorf("cursor kind mismatch: expected %s, got %q", expectedKind, p.Kind)
+	}
+	if p.FilterHash != expectedFilterHash {
+		return articleCursorPayload{}, errors.New("cursor does not match current filter/query parameters")
+	}
+	if expectedKind == "before" && p.ID == "" {
+		return articleCursorPayload{}, errors.New("invalid cursor: missing article id")
+	}
+	if expectedKind == "after" && p.Seq < 0 {
+		return articleCursorPayload{}, errors.New("invalid after_cursor: negative sequence")
+	}
+	return p, nil
+}
+
+func queryArticlesOutput(st *store.Store, category, source, search string, page int, cursor, afterCursor string, limit int) (ArticlesOutput, error) {
 	if st == nil {
 		return ArticlesOutput{}, errors.New("store is unavailable")
 	}
-	if page <= 0 {
-		page = 1
+	cursor = strings.TrimSpace(cursor)
+	afterCursor = strings.TrimSpace(afterCursor)
+	if cursor != "" && afterCursor != "" {
+		return ArticlesOutput{}, errors.New("cannot specify both cursor and after_cursor")
 	}
+	if (cursor != "" || afterCursor != "") && page > 1 {
+		return ArticlesOutput{}, errors.New("cannot combine page > 1 with cursor or after_cursor")
+	}
+
 	clampedLimit := clampLimit(limit, defaultPageLimit, maxPageLimit)
 
-	items, total, categories, sources, err := st.QueryArticles(category, source, search, page, clampedLimit)
+	if page > 1 {
+		items, total, categories, sources, err := st.QueryArticles(category, source, search, page, clampedLimit)
+		if err != nil {
+			return ArticlesOutput{}, err
+		}
+		return ArticlesOutput{
+			Articles:   nonNilArticles(items),
+			TotalCount: total,
+			Page:       page,
+			Limit:      clampedLimit,
+			HasMore:    page*clampedLimit < total,
+			Categories: nonNilStrings(categories),
+			Sources:    nonNilStrings(sources),
+		}, nil
+	}
+
+	fh := articleFilterHash(category, source, search)
+	params := store.ArticleCursorParams{
+		Category: category,
+		Source:   source,
+		Search:   search,
+		Limit:    clampedLimit,
+	}
+
+	switch {
+	case cursor != "":
+		payload, err := decodeArticleCursor(cursor, "before", fh)
+		if err != nil {
+			return ArticlesOutput{}, err
+		}
+		params.Before = &store.ArticleCursorPos{
+			PublishedAt: payload.PublishedAt,
+			IngestedAt:  payload.IngestedAt,
+			ID:          payload.ID,
+		}
+	case afterCursor != "":
+		payload, err := decodeArticleCursor(afterCursor, "after", fh)
+		if err != nil {
+			return ArticlesOutput{}, err
+		}
+		seq := payload.Seq
+		params.AfterSeq = &seq
+	default:
+		params.IncludeMetadata = true
+	}
+
+	res, err := st.QueryArticlesCursor(params)
 	if err != nil {
 		return ArticlesOutput{}, err
 	}
-	if items == nil {
-		items = []model.Article{}
-	}
-	if categories == nil {
-		categories = []string{}
-	}
-	if sources == nil {
-		sources = []string{}
+
+	articles := make([]model.Article, 0, len(res.Items))
+	for _, it := range res.Items {
+		articles = append(articles, it.Article)
 	}
 
-	return ArticlesOutput{
-		Articles:   items,
-		TotalCount: total,
-		Page:       page,
+	out := ArticlesOutput{
+		Articles:   articles,
+		TotalCount: res.TotalCount,
 		Limit:      clampedLimit,
-		Categories: categories,
-		Sources:    sources,
-	}, nil
+		HasMore:    res.HasMore,
+		Categories: nonNilStrings(res.Categories),
+		Sources:    nonNilStrings(res.Sources),
+	}
+	if cursor == "" && afterCursor == "" {
+		out.Page = 1
+	}
+
+	if afterCursor == "" && res.HasMore && len(res.Items) > 0 {
+		last := res.Items[len(res.Items)-1].Article
+		out.NextCursor = encodeArticleCursor(articleCursorPayload{
+			Kind:        "before",
+			PublishedAt: last.PublishedAt.Unix(),
+			IngestedAt:  last.IngestedAt.Unix(),
+			ID:          last.ID,
+			FilterHash:  fh,
+		})
+	}
+
+	if afterCursor != "" {
+		if res.MaxSeq > 0 {
+			out.HeadCursor = encodeArticleCursor(articleCursorPayload{
+				Kind:       "after",
+				Seq:        res.MaxSeq,
+				FilterHash: fh,
+			})
+		} else {
+			out.HeadCursor = afterCursor
+		}
+	} else if cursor == "" {
+		out.HeadCursor = encodeArticleCursor(articleCursorPayload{
+			Kind:       "after",
+			Seq:        res.MaxSeq,
+			FilterHash: fh,
+		})
+	}
+
+	return out, nil
+}
+
+func nonNilArticles(items []model.Article) []model.Article {
+	if items == nil {
+		return []model.Article{}
+	}
+	return items
+}
+
+func nonNilStrings(items []string) []string {
+	if items == nil {
+		return []string{}
+	}
+	return items
 }
 
 func handleManageSources(eng *engine.Engine, st *store.Store, in ManageSourcesInput) (SourcesOutput, error) {

@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -24,9 +25,11 @@ const (
 
 // Store provides persistence using embedded SQLite.
 type Store struct {
-	db       *sql.DB
-	dbPath   string
-	readOnly bool
+	db            *sql.DB
+	dbPath        string
+	readOnly      bool
+	hasArticleSeq bool
+	articleSeq    atomic.Int64
 }
 
 // WebhookRetry represents a queued webhook delivery attempt.
@@ -180,11 +183,13 @@ func New(dbPath string) (*Store, error) {
 		url TEXT NOT NULL,
 		image_url TEXT NOT NULL DEFAULT '',
 		published_at INTEGER NOT NULL,
-		ingested_at INTEGER NOT NULL
+		ingested_at INTEGER NOT NULL,
+		seq INTEGER NOT NULL DEFAULT 0
 	);
 
 	CREATE INDEX IF NOT EXISTS idx_articles_feed_published ON articles(feed_url, published_at DESC);
 	CREATE INDEX IF NOT EXISTS idx_articles_published ON articles(published_at DESC);
+	CREATE INDEX IF NOT EXISTS idx_articles_pub_ing_id ON articles(published_at DESC, ingested_at DESC, id DESC);
 
 	CREATE TABLE IF NOT EXISTS clusters (
 		cluster_hash TEXT PRIMARY KEY,
@@ -220,6 +225,27 @@ func New(dbPath string) (*Store, error) {
 		_ = db.Close()
 		return nil, err
 	}
+	st.hasArticleSeq = true
+
+	var maxSeq int64
+	if err := db.QueryRow(`SELECT COALESCE(MAX(seq), 0) FROM articles;`).Scan(&maxSeq); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("reading max article seq: %w", err)
+	}
+	savedSeq, err := st.readPersistedArticleSeq()
+	if err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	if savedSeq > maxSeq {
+		maxSeq = savedSeq
+	} else if maxSeq > savedSeq {
+		if err := st.saveArticleSeqHighWater(db, maxSeq); err != nil {
+			_ = db.Close()
+			return nil, fmt.Errorf("persisting initial article_seq: %w", err)
+		}
+	}
+	st.articleSeq.Store(maxSeq)
 
 	return st, nil
 }
@@ -257,7 +283,11 @@ func NewReadOnly(dbPath string) (*Store, error) {
 		return nil, fmt.Errorf("verifying read-only sqlite handle: %w", err)
 	}
 
-	return &Store{db: db, dbPath: dbPath, readOnly: true}, nil
+	st := &Store{db: db, dbPath: dbPath, readOnly: true}
+	if hasSeq, err := st.hasColumn("articles", "seq"); err == nil {
+		st.hasArticleSeq = hasSeq
+	}
+	return st, nil
 }
 
 // IsReadOnly reports whether the Store was opened in read-only mode.
@@ -275,6 +305,7 @@ func (s *Store) migrateColumns() error {
 		{"clusters", "scraper_used", "ALTER TABLE clusters ADD COLUMN scraper_used TEXT NOT NULL DEFAULT '';"},
 		{"clusters", "dispatch_mode", "ALTER TABLE clusters ADD COLUMN dispatch_mode TEXT NOT NULL DEFAULT '';"},
 		{"clusters", "dispatch_targets", "ALTER TABLE clusters ADD COLUMN dispatch_targets TEXT NOT NULL DEFAULT '';"},
+		{"articles", "seq", "ALTER TABLE articles ADD COLUMN seq INTEGER NOT NULL DEFAULT 0;"},
 	}
 	for _, m := range migrations {
 		has, err := s.hasColumn(m.table, m.column)
@@ -285,7 +316,15 @@ func (s *Store) migrateColumns() error {
 			if _, err := s.db.Exec(m.ddl); err != nil {
 				return fmt.Errorf("migrating %s.%s: %w", m.table, m.column, err)
 			}
+			if m.table == "articles" && m.column == "seq" {
+				if _, err := s.db.Exec(`UPDATE articles SET seq = rowid WHERE seq = 0;`); err != nil {
+					return fmt.Errorf("backfilling articles.seq: %w", err)
+				}
+			}
 		}
+	}
+	if _, err := s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_articles_seq ON articles(seq ASC);`); err != nil {
+		return fmt.Errorf("creating articles seq index: %w", err)
 	}
 	return nil
 }
@@ -577,6 +616,33 @@ func (s *Store) GetConfigRevision() (int64, error) {
 		return 0, fmt.Errorf("parsing config revision %q: %w", raw, err)
 	}
 	return rev, nil
+}
+
+func (s *Store) readPersistedArticleSeq() (int64, error) {
+	var raw string
+	err := s.db.QueryRow(`SELECT value_json FROM settings WHERE key = 'article_seq';`).Scan(&raw)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return 0, nil
+		}
+		return 0, fmt.Errorf("reading article_seq: %w", err)
+	}
+	seq, err := strconv.ParseInt(strings.TrimSpace(raw), 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("parsing article_seq %q: %w", raw, err)
+	}
+	return seq, nil
+}
+
+func (s *Store) saveArticleSeqHighWater(execer sqlExecer, seq int64) error {
+	_, err := execer.Exec(`
+		INSERT INTO settings (key, value_json, updated_at)
+		VALUES ('article_seq', ?, ?)
+		ON CONFLICT(key) DO UPDATE SET
+			value_json = CAST(MAX(CAST(settings.value_json AS INTEGER), CAST(excluded.value_json AS INTEGER)) AS TEXT),
+			updated_at = excluded.updated_at;
+	`, strconv.FormatInt(seq, 10), time.Now().Unix())
+	return err
 }
 
 // SaveRuntimeSettings persists engine, keyword, enrichment, LLM, and dispatch settings as JSON.
@@ -933,8 +999,8 @@ func (s *Store) UpsertArticles(articles []model.Article) (int, error) {
 	}
 	stmt, err := tx.Prepare(`
 		INSERT OR IGNORE INTO articles (
-			id, feed_url, feed_name, feed_tier, category, title, description, url, image_url, published_at, ingested_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+			id, feed_url, feed_name, feed_tier, category, title, description, url, image_url, published_at, ingested_at, seq
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
 	`)
 	if err != nil {
 		_ = tx.Rollback()
@@ -943,6 +1009,7 @@ func (s *Store) UpsertArticles(articles []model.Article) (int, error) {
 	defer stmt.Close()
 
 	inserted := 0
+	var maxInsertedSeq int64
 	nowUnix := time.Now().Unix()
 	for _, a := range articles {
 		ingUnix := a.IngestedAt.Unix()
@@ -953,22 +1020,69 @@ func (s *Store) UpsertArticles(articles []model.Article) (int, error) {
 		if pubUnix <= 0 {
 			pubUnix = ingUnix
 		}
+		seq := s.articleSeq.Add(1)
 		res, err := stmt.Exec(
 			a.ID, a.FeedURL, a.FeedName, a.FeedTier, a.Category,
-			a.Title, a.Description, a.URL, a.ImageURL, pubUnix, ingUnix,
+			a.Title, a.Description, a.URL, a.ImageURL, pubUnix, ingUnix, seq,
 		)
 		if err != nil {
 			_ = tx.Rollback()
 			return 0, fmt.Errorf("inserting article %s: %w", a.ID, err)
 		}
 		n, _ := res.RowsAffected()
-		inserted += int(n)
+		if n > 0 {
+			inserted += int(n)
+			if seq > maxInsertedSeq {
+				maxInsertedSeq = seq
+			}
+		}
+	}
+
+	if inserted > 0 {
+		if err := s.saveArticleSeqHighWater(tx, maxInsertedSeq); err != nil {
+			_ = tx.Rollback()
+			return 0, fmt.Errorf("persisting article_seq: %w", err)
+		}
 	}
 
 	if err := tx.Commit(); err != nil {
 		return 0, err
 	}
 	return inserted, nil
+}
+
+// ArticleCursorPos identifies an article position in (published_at, ingested_at, id) order.
+type ArticleCursorPos struct {
+	PublishedAt int64
+	IngestedAt  int64
+	ID          string
+}
+
+// ArticleCursorParams configures keyset cursor pagination for articles.
+type ArticleCursorParams struct {
+	Category        string
+	Source          string
+	Search          string
+	Limit           int
+	Before          *ArticleCursorPos
+	AfterSeq        *int64
+	IncludeMetadata bool
+}
+
+// ArticleCursorItem pairs a returned article with its durable ingestion sequence number.
+type ArticleCursorItem struct {
+	Article model.Article
+	Seq     int64
+}
+
+// ArticleCursorResult holds a bounded batch of articles and pagination state.
+type ArticleCursorResult struct {
+	Items      []ArticleCursorItem
+	HasMore    bool
+	MaxSeq     int64
+	TotalCount int
+	Categories []string
+	Sources    []string
 }
 
 // QueryArticles returns paginated raw articles alongside distinct categories and sources for filters.
@@ -980,6 +1094,126 @@ func (s *Store) QueryArticles(category, source, search string, page, limit int) 
 		limit = 20
 	}
 
+	where, args := buildArticleWhere(category, source, search)
+	whereSQL := joinWhere(where)
+
+	total, err = s.countArticles(whereSQL, args)
+	if err != nil {
+		return nil, 0, nil, nil, err
+	}
+
+	offset := (page - 1) * limit
+	queryArgs := append(append([]any{}, args...), limit, offset)
+	rows, err := s.db.Query(`
+		SELECT id, feed_url, feed_name, feed_tier, category, title, description, url, image_url, published_at, ingested_at
+		FROM articles`+whereSQL+`
+		ORDER BY published_at DESC, ingested_at DESC, id DESC
+		LIMIT ? OFFSET ?;
+	`, queryArgs...)
+	if err != nil {
+		return nil, 0, nil, nil, fmt.Errorf("querying articles: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		a, err := scanArticle(rows, nil)
+		if err != nil {
+			return nil, 0, nil, nil, err
+		}
+		items = append(items, a)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, nil, nil, err
+	}
+
+	categories, sources = s.queryArticleFacets()
+	return items, total, categories, sources, nil
+}
+
+// QueryArticlesCursor returns a bounded batch of articles using deterministic keyset pagination.
+func (s *Store) QueryArticlesCursor(p ArticleCursorParams) (ArticleCursorResult, error) {
+	if p.Before != nil && p.AfterSeq != nil {
+		return ArticleCursorResult{}, fmt.Errorf("cannot specify both before cursor and after_seq")
+	}
+	limit := p.Limit
+	if limit <= 0 || limit > 200 {
+		limit = 20
+	}
+
+	seqExpr := "seq"
+	if !s.hasArticleSeq {
+		seqExpr = "rowid"
+	}
+
+	where, args := buildArticleWhere(p.Category, p.Source, p.Search)
+	baseWhereSQL := joinWhere(where)
+	baseArgs := append([]any(nil), args...)
+
+	orderSQL := " ORDER BY published_at DESC, ingested_at DESC, id DESC"
+	if p.Before != nil {
+		where = append(where, "(published_at, ingested_at, id) < (?, ?, ?)")
+		args = append(args, p.Before.PublishedAt, p.Before.IngestedAt, p.Before.ID)
+	} else if p.AfterSeq != nil {
+		where = append(where, seqExpr+" > ?")
+		args = append(args, *p.AfterSeq)
+		orderSQL = " ORDER BY " + seqExpr + " ASC"
+	}
+
+	whereSQL := joinWhere(where)
+	queryArgs := append(append([]any{}, args...), limit+1)
+	rows, err := s.db.Query(`
+		SELECT id, feed_url, feed_name, feed_tier, category, title, description, url, image_url, published_at, ingested_at, `+seqExpr+`
+		FROM articles`+whereSQL+orderSQL+`
+		LIMIT ?;
+	`, queryArgs...)
+	if err != nil {
+		return ArticleCursorResult{}, fmt.Errorf("querying articles cursor: %w", err)
+	}
+	defer rows.Close()
+
+	var res ArticleCursorResult
+	for rows.Next() {
+		var seq int64
+		a, err := scanArticle(rows, &seq)
+		if err != nil {
+			return ArticleCursorResult{}, err
+		}
+		res.Items = append(res.Items, ArticleCursorItem{Article: a, Seq: seq})
+	}
+	if err := rows.Err(); err != nil {
+		return ArticleCursorResult{}, err
+	}
+
+	if len(res.Items) > limit {
+		res.HasMore = true
+		res.Items = res.Items[:limit]
+	}
+
+	for _, item := range res.Items {
+		if item.Seq > res.MaxSeq {
+			res.MaxSeq = item.Seq
+		}
+	}
+	if len(res.Items) == 0 && p.Before == nil && p.AfterSeq == nil {
+		var globalMax int64
+		if err := s.db.QueryRow(`SELECT COALESCE(MAX(` + seqExpr + `), 0) FROM articles;`).Scan(&globalMax); err == nil {
+			res.MaxSeq = globalMax
+		}
+	}
+
+	if p.IncludeMetadata {
+		total, err := s.countArticles(baseWhereSQL, baseArgs)
+		if err != nil {
+			return ArticleCursorResult{}, err
+		}
+		res.TotalCount = total
+		res.Categories, res.Sources = s.queryArticleFacets()
+	}
+
+	return res, nil
+}
+
+func buildArticleWhere(category, source, search string) ([]string, []any) {
 	var where []string
 	var args []any
 
@@ -996,43 +1230,43 @@ func (s *Store) QueryArticles(category, source, search string, page, limit int) 
 		where = append(where, "(LOWER(title) LIKE ? OR LOWER(description) LIKE ? OR LOWER(feed_name) LIKE ?)")
 		args = append(args, like, like, like)
 	}
+	return where, args
+}
 
-	whereSQL := ""
-	if len(where) > 0 {
-		whereSQL = " WHERE " + strings.Join(where, " AND ")
+func joinWhere(where []string) string {
+	if len(where) == 0 {
+		return ""
 	}
+	return " WHERE " + strings.Join(where, " AND ")
+}
 
-	if err = s.db.QueryRow(`SELECT COUNT(*) FROM articles`+whereSQL, args...).Scan(&total); err != nil {
-		return nil, 0, nil, nil, fmt.Errorf("counting articles: %w", err)
+func scanArticle(rows *sql.Rows, seqOut *int64) (model.Article, error) {
+	var a model.Article
+	var pubUnix, ingUnix int64
+	dest := []any{
+		&a.ID, &a.FeedURL, &a.FeedName, &a.FeedTier, &a.Category,
+		&a.Title, &a.Description, &a.URL, &a.ImageURL, &pubUnix, &ingUnix,
 	}
+	if seqOut != nil {
+		dest = append(dest, seqOut)
+	}
+	if err := rows.Scan(dest...); err != nil {
+		return model.Article{}, err
+	}
+	a.PublishedAt = time.Unix(pubUnix, 0).UTC()
+	a.IngestedAt = time.Unix(ingUnix, 0).UTC()
+	return a, nil
+}
 
-	offset := (page - 1) * limit
-	queryArgs := append(append([]any{}, args...), limit, offset)
-	rows, err := s.db.Query(`
-		SELECT id, feed_url, feed_name, feed_tier, category, title, description, url, image_url, published_at, ingested_at
-		FROM articles`+whereSQL+`
-		ORDER BY published_at DESC, ingested_at DESC
-		LIMIT ? OFFSET ?;
-	`, queryArgs...)
-	if err != nil {
-		return nil, 0, nil, nil, fmt.Errorf("querying articles: %w", err)
+func (s *Store) countArticles(whereSQL string, args []any) (int, error) {
+	var total int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM articles`+whereSQL, args...).Scan(&total); err != nil {
+		return 0, fmt.Errorf("counting articles: %w", err)
 	}
-	defer rows.Close()
+	return total, nil
+}
 
-	for rows.Next() {
-		var a model.Article
-		var pubUnix, ingUnix int64
-		if err := rows.Scan(&a.ID, &a.FeedURL, &a.FeedName, &a.FeedTier, &a.Category, &a.Title, &a.Description, &a.URL, &a.ImageURL, &pubUnix, &ingUnix); err != nil {
-			return nil, 0, nil, nil, err
-		}
-		a.PublishedAt = time.Unix(pubUnix, 0).UTC()
-		a.IngestedAt = time.Unix(ingUnix, 0).UTC()
-		items = append(items, a)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, 0, nil, nil, err
-	}
-
+func (s *Store) queryArticleFacets() (categories []string, sources []string) {
 	catRows, err := s.db.Query(`SELECT DISTINCT category FROM articles WHERE category != '' ORDER BY category ASC;`)
 	if err == nil {
 		defer catRows.Close()
@@ -1054,8 +1288,7 @@ func (s *Store) QueryArticles(category, source, search string, page, limit int) 
 			}
 		}
 	}
-
-	return items, total, categories, sources, nil
+	return categories, sources
 }
 
 // GetRecentArticles returns articles published after cutoff for window clustering and telemetry.
@@ -1195,9 +1428,9 @@ func (s *Store) QueryClusters(statusFilter, tierFilter, search string, since tim
 		whereSQL = " WHERE " + strings.Join(where, " AND ")
 	}
 
-	orderSQL := " ORDER BY score DESC, updated_at DESC"
+	orderSQL := " ORDER BY score DESC, updated_at DESC, cluster_hash DESC"
 	if sortBy == "recent" {
-		orderSQL = " ORDER BY updated_at DESC, score DESC"
+		orderSQL = " ORDER BY updated_at DESC, score DESC, cluster_hash DESC"
 	}
 
 	rows, err := s.db.Query(`

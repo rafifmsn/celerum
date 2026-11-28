@@ -371,3 +371,144 @@ func TestMCPServerReadOnlyMode(t *testing.T) {
 		t.Fatalf("get_raw_feed in ReadOnly mode failed: err=%v res=%+v", err, rawCall)
 	}
 }
+
+func TestMCPServerArticleCursors(t *testing.T) {
+	st, err := store.New(filepath.Join(t.TempDir(), "mcp_cursor.db"))
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	defer st.Close()
+
+	base := time.Date(2026, 11, 28, 12, 0, 0, 0, time.UTC)
+	seed := []model.Article{
+		{ID: "a1", FeedURL: "https://ex.com/rss", FeedName: "ExFeed", Category: "Crypto", Title: "Alpha Bitcoin", URL: "https://ex.com/1", PublishedAt: base.Add(-4 * time.Minute), IngestedAt: base},
+		{ID: "a2", FeedURL: "https://ex.com/rss", FeedName: "ExFeed", Category: "Crypto", Title: "Beta Bitcoin", URL: "https://ex.com/2", PublishedAt: base.Add(-3 * time.Minute), IngestedAt: base},
+		{ID: "a3", FeedURL: "https://ex.com/rss", FeedName: "ExFeed", Category: "Crypto", Title: "Gamma Macro", URL: "https://ex.com/3", PublishedAt: base.Add(-2 * time.Minute), IngestedAt: base},
+		// a4 and a5 share identical timestamps to verify deterministic id DESC tie-breaking.
+		{ID: "a4", FeedURL: "https://ex.com/rss", FeedName: "ExFeed", Category: "Crypto", Title: "Delta Bitcoin", URL: "https://ex.com/4", PublishedAt: base.Add(-1 * time.Minute), IngestedAt: base},
+		{ID: "a5", FeedURL: "https://ex.com/rss", FeedName: "ExFeed", Category: "Crypto", Title: "Epsilon Bitcoin", URL: "https://ex.com/5", PublishedAt: base.Add(-1 * time.Minute), IngestedAt: base},
+	}
+	if _, err := st.UpsertArticles(seed); err != nil {
+		t.Fatalf("UpsertArticles seed: %v", err)
+	}
+
+	eng := engine.New(config.DefaultConfig(), st)
+	srv := New(eng, st, Options{})
+	cs := connectInMemory(t, srv)
+	ctx := context.Background()
+
+	callArticles := func(tool string, args map[string]any) (ArticlesOutput, *mcp.CallToolResult) {
+		res, err := cs.CallTool(ctx, &mcp.CallToolParams{Name: tool, Arguments: args})
+		if err != nil {
+			t.Fatalf("%s transport error: %v", tool, err)
+		}
+		if res.IsError {
+			return ArticlesOutput{}, res
+		}
+		var out ArticlesOutput
+		if err := json.Unmarshal([]byte(res.Content[0].(*mcp.TextContent).Text), &out); err != nil {
+			t.Fatalf("unmarshal %s output: %v", tool, err)
+		}
+		return out, res
+	}
+
+	// 1. Initial bounded slice (limit=2) returns a5, a4 and both cursors.
+	p1, res := callArticles("get_raw_feed", map[string]any{"category": "Crypto", "limit": 2})
+	if res.IsError {
+		t.Fatalf("page 1 error: %+v", res)
+	}
+	if len(p1.Articles) != 2 || p1.Articles[0].ID != "a5" || p1.Articles[1].ID != "a4" {
+		t.Fatalf("unexpected page 1 articles: %+v", p1.Articles)
+	}
+	if !p1.HasMore || p1.NextCursor == "" || p1.HeadCursor == "" || p1.TotalCount != 5 || p1.Page != 1 {
+		t.Fatalf("unexpected page 1 metadata: %+v", p1)
+	}
+
+	// 2. Concurrent events arrive while agent inspects page 1 (one fresh, one backdated).
+	if _, err := st.UpsertArticles([]model.Article{
+		{ID: "a6-new", FeedURL: "https://ex.com/rss", FeedName: "ExFeed", Category: "Crypto", Title: "Zeta Bitcoin", URL: "https://ex.com/6", PublishedAt: base.Add(1 * time.Minute), IngestedAt: base.Add(2 * time.Minute)},
+		{ID: "a7-backdated", FeedURL: "https://ex.com/rss", FeedName: "ExFeed", Category: "Crypto", Title: "Backdated Bitcoin", URL: "https://ex.com/7", PublishedAt: base.Add(-10 * time.Minute), IngestedAt: base.Add(2 * time.Minute)},
+	}); err != nil {
+		t.Fatalf("UpsertArticles concurrent: %v", err)
+	}
+
+	// 3. Finish historical slice with next_cursor: no duplicates or skips from a6-new; head_cursor omitted.
+	p2, res := callArticles("get_raw_feed", map[string]any{"category": "Crypto", "cursor": p1.NextCursor, "limit": 2})
+	if res.IsError {
+		t.Fatalf("page 2 error: %+v", res)
+	}
+	if len(p2.Articles) != 2 || p2.Articles[0].ID != "a3" || p2.Articles[1].ID != "a2" {
+		t.Fatalf("unexpected page 2 articles: %+v", p2.Articles)
+	}
+	if !p2.HasMore || p2.NextCursor == "" || p2.HeadCursor != "" || p2.TotalCount != 0 || p2.Page != 0 {
+		t.Fatalf("unexpected page 2 metadata: %+v", p2)
+	}
+
+	p3, res := callArticles("get_raw_feed", map[string]any{"category": "Crypto", "cursor": p2.NextCursor, "limit": 2})
+	if res.IsError {
+		t.Fatalf("page 3 error: %+v", res)
+	}
+	if len(p3.Articles) != 2 || p3.Articles[0].ID != "a1" || p3.Articles[1].ID != "a7-backdated" || p3.HasMore || p3.NextCursor != "" {
+		t.Fatalf("unexpected page 3 output: %+v", p3)
+	}
+
+	// 4. Pick up newly arrived events using head_cursor from page 1 (limit=1 to test forward paging).
+	t1, res := callArticles("get_raw_feed", map[string]any{"category": "Crypto", "after_cursor": p1.HeadCursor, "limit": 1})
+	if res.IsError {
+		t.Fatalf("tail 1 error: %+v", res)
+	}
+	if len(t1.Articles) != 1 || t1.Articles[0].ID != "a6-new" || !t1.HasMore || t1.NextCursor != "" || t1.HeadCursor == "" {
+		t.Fatalf("unexpected tail 1 output: %+v", t1)
+	}
+
+	t2, res := callArticles("get_raw_feed", map[string]any{"category": "Crypto", "after_cursor": t1.HeadCursor, "limit": 5})
+	if res.IsError {
+		t.Fatalf("tail 2 error: %+v", res)
+	}
+	if len(t2.Articles) != 1 || t2.Articles[0].ID != "a7-backdated" || t2.HasMore || t2.HeadCursor == "" {
+		t.Fatalf("unexpected tail 2 output: %+v", t2)
+	}
+
+	// Polling again with no new arrivals echoes head_cursor unchanged.
+	t3, res := callArticles("get_raw_feed", map[string]any{"category": "Crypto", "after_cursor": t2.HeadCursor, "limit": 5})
+	if res.IsError {
+		t.Fatalf("tail 3 error: %+v", res)
+	}
+	if len(t3.Articles) != 0 || t3.HasMore || t3.HeadCursor != t2.HeadCursor {
+		t.Fatalf("unexpected tail 3 output: %+v", t3)
+	}
+
+	// 5. search_articles supports cursor + after_cursor identically.
+	s1, res := callArticles("search_articles", map[string]any{"query": "Bitcoin", "limit": 2})
+	if res.IsError || len(s1.Articles) != 2 || !s1.HasMore || s1.NextCursor == "" || s1.HeadCursor == "" {
+		t.Fatalf("unexpected search page 1: %+v res=%+v", s1, res)
+	}
+	s2, res := callArticles("search_articles", map[string]any{"query": "Bitcoin", "cursor": s1.NextCursor, "limit": 2})
+	if res.IsError || len(s2.Articles) != 2 || !s2.HasMore {
+		t.Fatalf("unexpected search page 2: %+v res=%+v", s2, res)
+	}
+	if s2.Articles[0].ID == s1.Articles[0].ID || s2.Articles[0].ID == s1.Articles[1].ID {
+		t.Fatalf("duplicate search results across cursor hop")
+	}
+
+	// 6. Validation errors: conflicting args, filter mismatch, malformed cursor, wrong cursor kind.
+	invalidCases := []struct {
+		name string
+		tool string
+		args map[string]any
+	}{
+		{"both_cursors", "get_raw_feed", map[string]any{"category": "Crypto", "cursor": p1.NextCursor, "after_cursor": p1.HeadCursor}},
+		{"page_with_cursor", "get_raw_feed", map[string]any{"category": "Crypto", "cursor": p1.NextCursor, "page": 2}},
+		{"filter_mismatch_category", "get_raw_feed", map[string]any{"category": "Macro", "cursor": p1.NextCursor}},
+		{"filter_mismatch_query", "search_articles", map[string]any{"query": "Ethereum", "cursor": s1.NextCursor}},
+		{"malformed_cursor", "get_raw_feed", map[string]any{"cursor": "not-valid-base64!!!"}},
+		{"wrong_cursor_kind_before", "get_raw_feed", map[string]any{"category": "Crypto", "cursor": p1.HeadCursor}},
+		{"wrong_cursor_kind_after", "get_raw_feed", map[string]any{"category": "Crypto", "after_cursor": p1.NextCursor}},
+	}
+	for _, tc := range invalidCases {
+		_, errRes := callArticles(tc.tool, tc.args)
+		if !errRes.IsError {
+			t.Fatalf("case %s: expected tool error, got success", tc.name)
+		}
+	}
+}
